@@ -2,6 +2,8 @@ package worker
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"time"
 
 	"chatops-deploy/internal/adapter/kubernetes"
@@ -33,6 +35,7 @@ func (w *Worker) Run(ctx context.Context) {
 			return
 		case <-ticker.C:
 			w.runOne(ctx)
+			w.dispatchNotifications(ctx)
 		}
 	}
 }
@@ -51,25 +54,47 @@ func (w *Worker) runOne(ctx context.Context) {
 		}
 	}
 	if err != nil {
-		_ = w.store.TransitionOperation(ctx, operation.ID, domain.StatusRunning, domain.StatusFailed, "kubernetes_failed", err.Error())
-		w.notify(ctx, operation, "操作执行失败："+err.Error())
+		w.transitionWithNotification(ctx, operation, domain.StatusFailed, "kubernetes_failed", err.Error(), "操作执行失败："+err.Error())
 		w.logger.Error("operation failed", zap.String("operation_id", operation.ID.String()), zap.Error(err))
 		return
 	}
-	_ = w.store.TransitionOperation(ctx, operation.ID, domain.StatusRunning, domain.StatusSucceeded, "", "")
-	w.notify(ctx, operation, "操作执行成功："+operation.ID.String())
+	w.transitionWithNotification(ctx, operation, domain.StatusSucceeded, "", "", "操作执行成功："+operation.ID.String())
 }
 
-func (w *Worker) notify(ctx context.Context, operation domain.Operation, text string) {
-	if w.registry == nil || operation.ConversationID == "" || operation.MessageProvider == domain.MessageProviderWeb {
+func (w *Worker) transitionWithNotification(ctx context.Context, operation domain.Operation, status domain.OperationStatus, code, message, notificationText string) {
+	var notification *messaging.Notification
+	if w.registry != nil && operation.ConversationID != "" && operation.MessageProvider != domain.MessageProviderWeb {
+		value := messaging.Notification{OperationID: operation.ID.String(), Destination: operation.ConversationID, Text: notificationText}
+		notification = &value
+	}
+	if err := w.store.TransitionOperationWithNotification(ctx, operation.ID, domain.StatusRunning, status, code, message, notification, operation.MessageProvider); err != nil {
+		w.logger.Warn("transition operation", zap.String("operation_id", operation.ID.String()), zap.Error(err))
+	}
+}
+
+func (w *Worker) dispatchNotifications(ctx context.Context) {
+	if w.registry == nil {
 		return
 	}
-	provider, ok := w.registry.Provider(operation.MessageProvider)
-	if !ok {
-		w.logger.Warn("operation message provider unavailable", zap.String("provider", string(operation.MessageProvider)), zap.String("operation_id", operation.ID.String()))
+	rows, err := w.store.ClaimOutbox(ctx, 20, 30*time.Second)
+	if err != nil {
 		return
 	}
-	if err := provider.Send(ctx, messaging.Notification{OperationID: operation.ID.String(), Destination: operation.ConversationID, Text: text}); err != nil {
-		w.logger.Warn("send operation notification", zap.String("provider", string(operation.MessageProvider)), zap.String("operation_id", operation.ID.String()), zap.Error(err))
+	for _, row := range rows {
+		provider, ok := w.registry.Provider(domain.MessageProvider(row.Provider))
+		if !ok {
+			_ = w.store.MarkOutboxFailed(ctx, row.ID, fmt.Errorf("message provider %s is unavailable", row.Provider))
+			continue
+		}
+		var notification messaging.Notification
+		if err := json.Unmarshal(row.Payload, &notification); err != nil {
+			_ = w.store.MarkOutboxFailed(ctx, row.ID, err)
+			continue
+		}
+		if err := provider.Send(ctx, notification); err != nil {
+			_ = w.store.MarkOutboxFailed(ctx, row.ID, err)
+			continue
+		}
+		_ = w.store.MarkOutboxSent(ctx, row.ID)
 	}
 }

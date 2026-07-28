@@ -2,6 +2,8 @@ package feishu_test
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,10 +16,10 @@ import (
 )
 
 func TestProviderDecodesCommandAndApproval(t *testing.T) {
-	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: "https://example.test", VerificationToken: "verify"})
+	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: "https://example.test", VerificationToken: "verify", EncryptKey: "encrypt-key"})
 	body := []byte(`{"header":{"event_id":"event-1","token":"verify"},"event":{"sender":{"sender_id":{"open_id":"ou-user"}},"message":{"chat_id":"oc-chat","content":"{\"text\":\"/deploy env-1 image:v1\"}"},"action":{"value":{"operation_id":"op-1","decision":"approved"}}}}`)
 
-	incoming, err := provider.Decode(context.Background(), messaging.Request{Body: body, Headers: map[string]string{}})
+	incoming, err := provider.Decode(context.Background(), signedRequest(body, "encrypt-key"))
 
 	require.NoError(t, err)
 	require.Equal(t, "feishu", string(incoming.Provider))
@@ -45,10 +47,10 @@ func TestProviderUsesChallengeAndSendsText(t *testing.T) {
 		}
 	}))
 	defer server.Close()
-	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: server.URL})
-	body := []byte(`{"challenge":"challenge-1","token":"","header":{"token":""}}`)
+	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: server.URL, VerificationToken: "verify", EncryptKey: "encrypt-key"})
+	body := []byte(`{"challenge":"challenge-1","token":"verify","header":{"token":""}}`)
 
-	incoming, err := provider.Decode(context.Background(), messaging.Request{Body: body})
+	incoming, err := provider.Decode(context.Background(), signedRequest(body, "encrypt-key"))
 	require.NoError(t, err)
 	require.Equal(t, "challenge-1", incoming.Challenge)
 	require.NoError(t, provider.Send(context.Background(), messaging.Notification{Destination: "oc-chat", Text: "hello"}))
@@ -65,10 +67,24 @@ func TestProviderRedactsNonSuccessResponse(t *testing.T) {
 		_, _ = w.Write([]byte("private provider response"))
 	}))
 	defer server.Close()
-	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: server.URL})
+	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: server.URL, VerificationToken: "verify", EncryptKey: "encrypt-key"})
 
 	err := provider.Send(context.Background(), messaging.Notification{Destination: "oc-chat", Text: "hello"})
 
 	require.EqualError(t, err, "feishu send returned 403 Forbidden")
 	require.NotContains(t, err.Error(), "private provider response")
+}
+
+func TestProviderRejectsMissingCallbackSignature(t *testing.T) {
+	provider := feishu.NewProvider(config.FeishuConfig{AppID: "app", AppSecret: "secret", APIBaseURL: "https://example.test", VerificationToken: "verify", EncryptKey: "encrypt-key"})
+
+	_, err := provider.Decode(context.Background(), messaging.Request{Body: []byte(`{"header":{"token":"verify"}}`)})
+
+	require.EqualError(t, err, "invalid feishu signature")
+}
+
+func signedRequest(body []byte, encryptKey string) messaging.Request {
+	timestamp, nonce := "100", "nonce"
+	sum := sha256.Sum256(append([]byte(timestamp+nonce+encryptKey), body...))
+	return messaging.Request{Body: body, Headers: map[string]string{"X-Lark-Request-Timestamp": timestamp, "X-Lark-Request-Nonce": nonce, "X-Lark-Signature": hex.EncodeToString(sum[:])}}
 }

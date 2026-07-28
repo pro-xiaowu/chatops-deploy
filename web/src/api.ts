@@ -1,4 +1,4 @@
-import type {ApiEnvelope,Application,Capabilities,Cluster,Environment,MessageProvider,MessageProviderSettings,Operation,User} from './types'
+import type {ApiEnvelope,Application,Capabilities,Cluster,Environment,ExternalIdentity,MessageProvider,MessageProviderSettings,Operation,User} from './types'
 
 const token=()=>typeof localStorage==='undefined'?'':localStorage.getItem('chatops_api_token')||''
 const cookie=(name:string)=>typeof document==='undefined'?'':document.cookie.split('; ').find(value=>value.startsWith(`${name}=`))?.split('=')[1]||''
@@ -38,4 +38,6 @@ export const api={
   approve:(id:string,input:unknown)=>request<void>(`/operations/${id}/approval`,{method:'POST',body:JSON.stringify(input)}),
   users:()=>request<User[]>('/users'),
   createUser:(input:unknown)=>request<User>('/users',{method:'POST',body:JSON.stringify(input)}),
+  identities:(userId:string)=>request<ExternalIdentity[]>(`/users/${userId}/identities`),
+  createIdentity:(userId:string,input:unknown)=>request<void>(`/users/${userId}/identities`,{method:'POST',body:JSON.stringify(input)}),
 }

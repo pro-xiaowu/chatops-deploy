@@ -13,6 +13,7 @@ import (
 type fakeProvider struct {
 	name       domain.MessageProvider
 	configured bool
+	checkErr   error
 }
 
 func (p fakeProvider) Name() domain.MessageProvider { return p.name }
@@ -24,10 +25,39 @@ func (p fakeProvider) Decode(context.Context, messaging.Request) (messaging.Inco
 }
 func (p fakeProvider) Send(context.Context, messaging.Notification) error { return nil }
 func (p fakeProvider) Check(context.Context) error {
+	if p.checkErr != nil {
+		return p.checkErr
+	}
 	if !p.configured {
 		return errors.New("not configured")
 	}
 	return nil
+}
+
+func TestRegistryDoesNotSelectUnhealthyProvider(t *testing.T) {
+	store := &storeStub{active: domain.MessageProviderWeb}
+	providerErr := errors.New("invalid credentials")
+	registry := messaging.NewRegistry(store, []messaging.Provider{fakeProvider{name: domain.MessageProviderWeCom, configured: true, checkErr: providerErr}})
+
+	err := registry.Select(context.Background(), domain.MessageProviderWeCom)
+
+	require.ErrorContains(t, err, "invalid credentials")
+	require.Equal(t, domain.MessageProviderWeb, store.active)
+	capabilities := registry.Capabilities(context.Background())
+	require.Len(t, capabilities, 1)
+	require.False(t, capabilities[0].Healthy)
+	require.Equal(t, "invalid credentials", capabilities[0].Reason)
+}
+
+func TestRegistryCachesSuccessfulHealthCheck(t *testing.T) {
+	store := &storeStub{active: domain.MessageProviderWeb}
+	registry := messaging.NewRegistry(store, []messaging.Provider{fakeProvider{name: domain.MessageProviderDingTalk, configured: true}})
+
+	before := registry.Capabilities(context.Background())
+	require.False(t, before[0].Healthy)
+	require.NoError(t, registry.Select(context.Background(), domain.MessageProviderDingTalk))
+	after := registry.Capabilities(context.Background())
+	require.True(t, after[0].Healthy)
 }
 
 type storeStub struct{ active domain.MessageProvider }

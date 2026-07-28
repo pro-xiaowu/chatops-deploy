@@ -13,8 +13,8 @@ import (
 )
 
 func VerifySignature(timestamp, nonce, encryptKey, signature string, body []byte) bool {
-	if encryptKey == "" {
-		return true
+	if timestamp == "" || nonce == "" || encryptKey == "" || signature == "" {
+		return false
 	}
 	sum := sha256.Sum256(append([]byte(timestamp+nonce+encryptKey), body...))
 	expected := hex.EncodeToString(sum[:])
@@ -108,5 +108,5 @@ func Command(content string) (string, []string) {
 	return strings.TrimPrefix(strings.ToLower(fields[0]), "/"), fields[1:]
 }
 func HelpText() string {
-	return "可用命令：/deploy <environment-id> <image>、/rollback <environment-id> <revision>、/status <environment-id>、/help"
+	return "可用命令：/deploy <environment-id> <image>、/rollback <environment-id> <revision>、/approve <operation-id> <approved|rejected>、/status <environment-id>、/help"
 }

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"chatops-deploy/internal/adapter/dingtalk"
+	"chatops-deploy/internal/adapter/feishu"
 	messagingweb "chatops-deploy/internal/adapter/messaging"
 	"chatops-deploy/internal/auth"
 	"chatops-deploy/internal/config"
@@ -46,6 +47,18 @@ func TestCapabilitiesExposeDevelopmentFlagWithoutSecrets(t *testing.T) {
 	require.NotContains(t, recorder.Body.String(), "secret")
 }
 
+func TestFeishuOAuthCapabilityDoesNotRequireWebhookConfiguration(t *testing.T) {
+	client := feishu.NewClient("app", "secret", "https://example.test")
+	api := handler.NewAPIWithOptions(nil, nil, nil, client, "", "", "", false, nil, "production", false)
+	router := transporthttp.NewRouter(transporthttp.Dependencies{Readiness: func(context.Context) error { return nil }, API: api})
+	recorder := httptest.NewRecorder()
+
+	router.ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/auth/capabilities", nil))
+
+	require.Equal(t, http.StatusOK, recorder.Code)
+	require.Contains(t, recorder.Body.String(), `"feishu_login":true`)
+}
+
 func TestDevelopmentLoginCreatesAuthenticatedAdminSession(t *testing.T) {
 	db := handlerIntegrationDB(t)
 	require.NoError(t, storepostgres.Migrate(context.Background(), db))
@@ -72,13 +85,18 @@ func TestDevelopmentLoginCreatesAuthenticatedAdminSession(t *testing.T) {
 }
 
 func TestAdminCanSelectConfiguredProvider(t *testing.T) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		require.Equal(t, "/v1.0/oauth2/accessToken", r.URL.Path)
+		_, _ = w.Write([]byte(`{"accessToken":"test-access","expireIn":3600}`))
+	}))
+	t.Cleanup(tokenServer.Close)
 	db := handlerIntegrationDB(t)
 	require.NoError(t, storepostgres.Migrate(context.Background(), db))
 	store := storepostgres.New(db)
 	tokens := auth.New(db)
 	registry := messaging.NewRegistry(store, []messaging.Provider{
 		messagingweb.New(),
-		dingtalk.NewProvider(config.DingTalkConfig{ClientID: "client", ClientSecret: "secret", RobotCode: "robot", EventToken: "token", APIBaseURL: "https://example.test"}),
+		dingtalk.NewProvider(config.DingTalkConfig{ClientID: "client", ClientSecret: "secret", RobotCode: "robot", EventToken: "token", APIBaseURL: tokenServer.URL}),
 	})
 	api := handler.NewAPIWithOptions(nil, store, tokens, nil, "", "", "http://localhost:8080", false, registry, "development", true)
 	router := transporthttp.NewRouter(transporthttp.Dependencies{Readiness: store.Ready, API: api, Tokens: tokens})

@@ -34,25 +34,30 @@ func NewProvider(cfg config.DingTalkConfig) *Provider {
 
 func (p *Provider) Name() domain.MessageProvider { return domain.MessageProviderDingTalk }
 func (p *Provider) Capabilities(context.Context) messaging.Capabilities {
-	result := messaging.Capabilities{Provider: p.Name(), Configured: p.configured, Healthy: p.configured}
+	result := messaging.Capabilities{Provider: p.Name(), Configured: p.configured}
 	if !p.configured {
 		result.Reason = "DingTalk credentials are not configured"
 	}
 	return result
 }
-func (p *Provider) Check(context.Context) error {
+func (p *Provider) Check(ctx context.Context) error {
 	if !p.configured {
 		return errors.New("dingtalk provider is not configured")
 	}
-	return nil
+	_, err := p.accessToken(ctx)
+	return err
 }
 
 func (p *Provider) Decode(_ context.Context, request messaging.Request) (messaging.Incoming, error) {
 	if !p.configured {
 		return messaging.Incoming{}, errors.New("dingtalk provider is not configured")
 	}
-	if token := request.Headers["X-DingTalk-Token"]; token != "" && token != p.cfg.EventToken {
-		return messaging.Incoming{}, errors.New("invalid dingtalk token")
+	signature := request.Query["signature"]
+	if signature == "" {
+		signature = request.Headers["X-DingTalk-Signature"]
+	}
+	if signature == "" || signature != Signature(p.cfg.EventToken, request.Query["timestamp"], string(request.Body)) {
+		return messaging.Incoming{}, errors.New("invalid dingtalk signature")
 	}
 	var payload struct {
 		MsgID          string `json:"msgId"`
@@ -79,6 +84,9 @@ func (p *Provider) Decode(_ context.Context, request messaging.Request) (messagi
 	}
 	if payload.ConversationID == "" {
 		payload.ConversationID = payload.ChatID
+	}
+	if payload.SenderID != "" {
+		payload.ConversationID = payload.SenderID
 	}
 	text := payload.Text.Content
 	if text == "" {
@@ -141,7 +149,11 @@ func (p *Provider) Send(ctx context.Context, notification messaging.Notification
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{"robotCode": p.cfg.RobotCode, "userIds": []string{notification.Destination}, "msgKey": "sampleText", "msgParam": fmt.Sprintf(`{"content":%q}`, notification.Text)})
+	text := notification.Text
+	if notification.ApprovalCard != nil && notification.OperationID != "" {
+		text = fmt.Sprintf("%s\n批准：/approve %s approved\n拒绝：/approve %s rejected", notification.Text, notification.OperationID, notification.OperationID)
+	}
+	body, err := json.Marshal(map[string]any{"robotCode": p.cfg.RobotCode, "userIds": []string{notification.Destination}, "msgKey": "sampleText", "msgParam": fmt.Sprintf(`{"content":%q}`, text)})
 	if err != nil {
 		return err
 	}
@@ -158,6 +170,16 @@ func (p *Provider) Send(ctx context.Context, notification messaging.Notification
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("dingtalk send returned %s", resp.Status)
+	}
+	var result struct {
+		Code json.RawMessage `json:"code"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return errors.New("invalid dingtalk send response")
+	}
+	code := string(result.Code)
+	if code != "" && code != `""` && code != `"0"` && code != "0" {
+		return errors.New("dingtalk send failed")
 	}
 	return nil
 }

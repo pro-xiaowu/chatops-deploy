@@ -22,6 +22,7 @@ type Capabilities struct {
 type Request struct {
 	Method  string
 	Headers map[string]string
+	Query   map[string]string
 	Body    []byte
 }
 

@@ -19,25 +19,26 @@ type Provider struct {
 }
 
 func NewProvider(cfg config.FeishuConfig) *Provider {
-	configured := strings.TrimSpace(cfg.AppID) != "" && strings.TrimSpace(cfg.AppSecret) != "" && strings.TrimSpace(cfg.APIBaseURL) != ""
+	configured := strings.TrimSpace(cfg.AppID) != "" && strings.TrimSpace(cfg.AppSecret) != "" && strings.TrimSpace(cfg.VerificationToken) != "" && strings.TrimSpace(cfg.EncryptKey) != "" && strings.TrimSpace(cfg.APIBaseURL) != ""
 	return &Provider{client: NewClient(cfg.AppID, cfg.AppSecret, cfg.APIBaseURL), verificationToken: cfg.VerificationToken, encryptKey: cfg.EncryptKey, configured: configured}
 }
 
 func (p *Provider) Name() domain.MessageProvider { return domain.MessageProviderFeishu }
 
 func (p *Provider) Capabilities(context.Context) messaging.Capabilities {
-	capabilities := messaging.Capabilities{Provider: p.Name(), Configured: p.configured, Healthy: p.configured}
+	capabilities := messaging.Capabilities{Provider: p.Name(), Configured: p.configured}
 	if !p.configured {
-		capabilities.Reason = "Feishu app credentials are not configured"
+		capabilities.Reason = "Feishu callback credentials are not configured"
 	}
 	return capabilities
 }
 
-func (p *Provider) Check(context.Context) error {
+func (p *Provider) Check(ctx context.Context) error {
 	if !p.configured {
 		return errors.New("feishu provider is not configured")
 	}
-	return nil
+	_, err := p.client.tenantToken(ctx)
+	return err
 }
 
 func (p *Provider) Decode(_ context.Context, request messaging.Request) (messaging.Incoming, error) {

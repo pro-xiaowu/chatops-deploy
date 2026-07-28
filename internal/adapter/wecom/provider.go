@@ -36,25 +36,30 @@ func NewProvider(cfg config.WeComConfig) *Provider {
 
 func (p *Provider) Name() domain.MessageProvider { return domain.MessageProviderWeCom }
 func (p *Provider) Capabilities(context.Context) messaging.Capabilities {
-	result := messaging.Capabilities{Provider: p.Name(), Configured: p.configured, Healthy: p.configured}
+	result := messaging.Capabilities{Provider: p.Name(), Configured: p.configured}
 	if !p.configured {
 		result.Reason = "WeCom credentials are not configured"
 	}
 	return result
 }
-func (p *Provider) Check(context.Context) error {
+func (p *Provider) Check(ctx context.Context) error {
 	if !p.configured {
 		return errors.New("wecom provider is not configured")
 	}
-	return nil
+	_, err := p.accessToken(ctx)
+	return err
 }
 
 func (p *Provider) Decode(_ context.Context, request messaging.Request) (messaging.Incoming, error) {
 	if !p.configured {
 		return messaging.Incoming{}, errors.New("wecom provider is not configured")
 	}
-	if token := request.Headers["X-WeCom-Token"]; token != "" && token != p.cfg.Token {
-		return messaging.Incoming{}, errors.New("invalid wecom token")
+	signature := request.Query["msg_signature"]
+	if signature == "" {
+		signature = request.Headers["X-WeCom-Signature"]
+	}
+	if signature == "" || signature != Signature(p.cfg.Token, request.Query["timestamp"], request.Query["nonce"], string(request.Body)) {
+		return messaging.Incoming{}, errors.New("invalid wecom signature")
 	}
 	var payload struct {
 		EventID        string   `json:"event_id"`
@@ -79,6 +84,9 @@ func (p *Provider) Decode(_ context.Context, request messaging.Request) (messagi
 	}
 	if payload.SubjectID == "" {
 		payload.SubjectID = payload.UserID
+	}
+	if payload.SubjectID != "" {
+		payload.ConversationID = payload.SubjectID
 	}
 	if payload.Text == "" {
 		payload.Text = payload.Content
@@ -138,7 +146,11 @@ func (p *Provider) Send(ctx context.Context, notification messaging.Notification
 	if err != nil {
 		return err
 	}
-	body, err := json.Marshal(map[string]any{"touser": notification.Destination, "msgtype": "text", "agentid": p.cfg.AgentID, "text": map[string]string{"content": notification.Text}})
+	text := notification.Text
+	if notification.ApprovalCard != nil && notification.OperationID != "" {
+		text = fmt.Sprintf("%s\n批准：/approve %s approved\n拒绝：/approve %s rejected", notification.Text, notification.OperationID, notification.OperationID)
+	}
+	body, err := json.Marshal(map[string]any{"touser": notification.Destination, "msgtype": "text", "agentid": p.cfg.AgentID, "text": map[string]string{"content": text}})
 	if err != nil {
 		return err
 	}
@@ -155,6 +167,12 @@ func (p *Provider) Send(ctx context.Context, notification messaging.Notification
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		return fmt.Errorf("wecom send returned %s", resp.Status)
+	}
+	var result struct {
+		ErrCode int `json:"errcode"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil || result.ErrCode != 0 {
+		return errors.New("wecom send failed")
 	}
 	return nil
 }

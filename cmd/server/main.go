@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"os/signal"
 	"syscall"
 	"time"
@@ -30,6 +31,14 @@ import (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "--healthcheck" {
+		response, err := http.Get("http://127.0.0.1:8080/readyz")
+		if err != nil || response.StatusCode != http.StatusOK {
+			os.Exit(1)
+		}
+		_ = response.Body.Close()
+		return
+	}
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("load configuration: %v", err)
@@ -82,6 +91,9 @@ func run(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
 	provider, ok := registry.Provider(configuredProvider)
 	if !ok || !provider.Capabilities(openCtx).Configured {
 		return fmt.Errorf("configured message provider %s is unavailable", configuredProvider)
+	}
+	if _, err = registry.Check(openCtx, configuredProvider); err != nil {
+		return fmt.Errorf("check configured message provider %s: %w", configuredProvider, err)
 	}
 	if err = store.InitializeActiveMessageProvider(openCtx, configuredProvider); err != nil {
 		return err

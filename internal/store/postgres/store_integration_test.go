@@ -2,9 +2,12 @@ package postgres
 
 import (
 	"context"
+	"errors"
 	"testing"
+	"time"
 
 	"chatops-deploy/internal/domain"
+	"chatops-deploy/internal/messaging"
 	"github.com/google/uuid"
 	"github.com/stretchr/testify/require"
 )
@@ -54,9 +57,52 @@ func TestActiveProviderRoundTripsAndRejectsUnknownValue(t *testing.T) {
 func TestActiveProviderCannotSwitchWithUnfinishedMessageOperations(t *testing.T) {
 	store := integrationStore(t)
 	require.NoError(t, store.SetActiveMessageProvider(context.Background(), domain.MessageProviderFeishu))
-	createMessageOriginOperation(t, store, domain.MessageProviderFeishu, "chat-1", "event-1")
+	_ = createMessageOriginOperation(t, store, domain.MessageProviderFeishu, "chat-1", "event-1")
 
 	require.ErrorIs(t, store.SetActiveMessageProvider(context.Background(), domain.MessageProviderWeCom), domain.ErrConflict)
+}
+
+func TestOperationTransitionAndNotificationAreAtomic(t *testing.T) {
+	store := integrationStore(t)
+	operation := createMessageOriginOperation(t, store, domain.MessageProviderWeCom, "conversation-1", "event-1")
+	require.NoError(t, store.DB.Model(&OperationModel{}).Where("id = ?", operation.ID).Update("status", string(domain.StatusRunning)).Error)
+	notification := messaging.Notification{OperationID: operation.ID.String(), Destination: "conversation-1", Text: "done"}
+
+	require.NoError(t, store.TransitionOperationWithNotification(context.Background(), operation.ID, domain.StatusRunning, domain.StatusSucceeded, "", "", &notification, domain.MessageProviderWeCom))
+
+	updated, err := store.GetOperation(context.Background(), operation.ID)
+	require.NoError(t, err)
+	require.Equal(t, domain.StatusSucceeded, updated.Status)
+	rows, err := store.PendingOutbox(context.Background(), 10)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, operation.ID.String(), notification.OperationID)
+}
+
+func TestNotificationOutboxRetriesAndCompletes(t *testing.T) {
+	store := integrationStore(t)
+	notification := messaging.Notification{OperationID: uuid.NewString(), Destination: "conversation-1", Text: "done"}
+
+	require.NoError(t, store.EnqueueNotification(context.Background(), notification, domain.MessageProviderWeCom))
+	rows, err := store.ClaimOutbox(context.Background(), 10, time.Minute)
+	require.NoError(t, err)
+	require.Len(t, rows, 1)
+	require.Equal(t, string(domain.MessageProviderWeCom), rows[0].Provider)
+	require.JSONEq(t, `{"OperationID":"`+notification.OperationID+`","Destination":"conversation-1","Text":"done","ApprovalCard":null}`, string(rows[0].Payload))
+	claimedAgain, err := store.ClaimOutbox(context.Background(), 10, time.Minute)
+	require.NoError(t, err)
+	require.Empty(t, claimedAgain)
+
+	require.NoError(t, store.MarkOutboxFailed(context.Background(), rows[0].ID, errors.New("temporary failure")))
+	var failed OutboxModel
+	require.NoError(t, store.DB.First(&failed, "id = ?", rows[0].ID).Error)
+	require.Equal(t, 1, failed.Attempts)
+	require.Equal(t, "temporary failure", failed.LastError)
+
+	require.NoError(t, store.MarkOutboxSent(context.Background(), rows[0].ID))
+	var sent OutboxModel
+	require.NoError(t, store.DB.First(&sent, "id = ?", rows[0].ID).Error)
+	require.NotNil(t, sent.SentAt)
 }
 
 func integrationStore(t *testing.T) *Store {
@@ -87,13 +133,14 @@ func createIntegrationUser(t *testing.T, store *Store) domain.User {
 	return user
 }
 
-func createMessageOriginOperation(t *testing.T, store *Store, provider domain.MessageProvider, conversation, event string) {
+func createMessageOriginOperation(t *testing.T, store *Store, provider domain.MessageProvider, conversation, event string) domain.Operation {
 	t.Helper()
 	app := createIntegrationApplication(t, store)
 	cluster := createIntegrationCluster(t, store)
 	environment, err := store.CreateEnvironment(context.Background(), domain.AppEnvironment{ApplicationID: app.ID, ClusterID: cluster.ID, Name: "production", Namespace: "default", Deployment: "demo", Container: "app", ImagePrefix: "registry.example/", ApprovalRequired: true})
 	require.NoError(t, err)
 	requester := createIntegrationUser(t, store)
-	_, err = store.CreateOperation(context.Background(), domain.Operation{Kind: domain.OperationDeploy, Status: domain.StatusPendingApproval, ApplicationID: app.ID, EnvironmentID: environment.ID, RequesterID: requester.ID, IdempotencyKey: event, MessageProvider: provider, ConversationID: conversation, EventID: event})
+	operation, err := store.CreateOperation(context.Background(), domain.Operation{Kind: domain.OperationDeploy, Status: domain.StatusPendingApproval, ApplicationID: app.ID, EnvironmentID: environment.ID, RequesterID: requester.ID, IdempotencyKey: event, MessageProvider: provider, ConversationID: conversation, EventID: event})
 	require.NoError(t, err)
+	return operation
 }

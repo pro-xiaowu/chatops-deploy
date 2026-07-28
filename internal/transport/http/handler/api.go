@@ -29,7 +29,8 @@ func (a *API) Webhook(c *gin.Context) {
 		return
 	}
 	requested := domain.MessageProvider(c.Param("provider"))
-	active, err := a.registry.Active(c)
+	requestContext := c.Request.Context()
+	active, err := a.registry.Active(requestContext)
 	if err != nil || active.Name() == domain.MessageProviderWeb || requested != active.Name() {
 		c.Status(http.StatusNotFound)
 		return
@@ -39,12 +40,19 @@ func (a *API) Webhook(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	incoming, err := active.Decode(c, messaging.Request{Method: c.Request.Method, Body: body, Headers: map[string]string{
+	incoming, err := active.Decode(requestContext, messaging.Request{Method: c.Request.Method, Body: body, Query: map[string]string{
+		"msg_signature": c.Query("msg_signature"),
+		"signature":     c.Query("signature"),
+		"timestamp":     c.Query("timestamp"),
+		"nonce":         c.Query("nonce"),
+	}, Headers: map[string]string{
 		"X-Lark-Request-Timestamp": c.GetHeader("X-Lark-Request-Timestamp"),
 		"X-Lark-Request-Nonce":     c.GetHeader("X-Lark-Request-Nonce"),
 		"X-Lark-Signature":         c.GetHeader("X-Lark-Signature"),
 		"X-WeCom-Token":            c.GetHeader("X-WeCom-Token"),
 		"X-DingTalk-Token":         c.GetHeader("X-DingTalk-Token"),
+		"X-WeCom-Signature":        c.GetHeader("X-WeCom-Signature"),
+		"X-DingTalk-Signature":     c.GetHeader("X-DingTalk-Signature"),
 	}})
 	if err != nil {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_webhook", "message": "provider callback validation failed"}})
@@ -55,7 +63,7 @@ func (a *API) Webhook(c *gin.Context) {
 		return
 	}
 	if incoming.OperationID != "" {
-		a.handleIncomingApproval(c, incoming)
+		a.handleIncomingApproval(requestContext, incoming)
 		c.Status(http.StatusOK)
 		return
 	}
@@ -63,20 +71,20 @@ func (a *API) Webhook(c *gin.Context) {
 		c.Status(http.StatusOK)
 		return
 	}
-	user, err := a.store.FindUserByIdentity(c, incoming.Provider, incoming.SubjectID)
+	user, err := a.store.FindUserByIdentity(requestContext, incoming.Provider, incoming.SubjectID)
 	if err != nil {
 		_ = active.Send(context.Background(), messaging.Notification{Destination: incoming.ConversationID, Text: "你还没有 ChatOps 权限，请联系管理员。"})
 		c.Status(http.StatusOK)
 		return
 	}
-	principal, err := a.store.PrincipalForUser(c, user.ID)
+	principal, err := a.store.PrincipalForUser(requestContext, user.ID)
 	if err != nil {
 		c.Status(http.StatusOK)
 		return
 	}
-	message := a.handleIncomingCommand(c, incoming, user, principal)
+	message := a.handleIncomingCommand(requestContext, incoming, user, principal)
 	if message != "" {
-		_ = active.Send(c, messaging.Notification{Destination: incoming.ConversationID, Text: message})
+		_ = active.Send(requestContext, messaging.Notification{Destination: incoming.ConversationID, Text: message})
 	}
 	c.Status(http.StatusOK)
 }
@@ -152,6 +160,22 @@ func (a *API) handleIncomingCommand(ctx context.Context, incoming messaging.Inco
 			}
 		}
 		return "回滚请求已创建，请等待执行或审批。"
+	case "approve":
+		if len(incoming.Arguments) != 2 {
+			return "用法：/approve <operation-id> <approved|rejected>"
+		}
+		operationID, err := uuid.Parse(incoming.Arguments[0])
+		if err != nil || (incoming.Arguments[1] != "approved" && incoming.Arguments[1] != "rejected") {
+			return "操作单 ID 或审批决定格式无效。"
+		}
+		operation, err := a.store.GetOperation(ctx, operationID)
+		if err != nil || !principal.Allows(domain.ActionApprove, operation.ApplicationID) {
+			return "你没有该操作单的审批权限。"
+		}
+		if err := a.app.Decide(ctx, operationID, user.ID, incoming.Arguments[1], ""); err != nil {
+			return "审批失败：" + err.Error()
+		}
+		return "审批已提交。"
 	case "status":
 		if len(incoming.Arguments) != 1 {
 			return "用法：/status <environment-id>"
@@ -524,14 +548,9 @@ func (a *API) revokeToken(c *gin.Context) {
 
 func (a *API) capabilities(c *gin.Context) {
 	providers := []messaging.Capabilities{}
-	feishuLogin := false
+	feishuLogin := a.feishu != nil && a.feishu.Configured()
 	if a.registry != nil {
-		providers = a.registry.Capabilities(c)
-		for _, provider := range providers {
-			if provider.Provider == domain.MessageProviderFeishu {
-				feishuLogin = provider.Configured
-			}
-		}
+		providers = a.registry.Capabilities(c.Request.Context())
 	}
 	c.JSON(http.StatusOK, gin.H{"data": gin.H{"dev_login": a.runtimeEnvironment == "development" && a.devAuthEnabled, "feishu_login": feishuLogin, "message_providers": providers}})
 }
@@ -541,12 +560,13 @@ func (a *API) devLogin(c *gin.Context) {
 		c.Status(http.StatusNotFound)
 		return
 	}
-	user, err := a.store.EnsureDevelopmentAdmin(c)
+	requestContext := c.Request.Context()
+	user, err := a.store.EnsureDevelopmentAdmin(requestContext)
 	if err != nil {
 		respond(c, nil, err)
 		return
 	}
-	session, err := a.tokens.CreateSession(c, user, 8*time.Hour)
+	session, err := a.tokens.CreateSession(requestContext, user, 8*time.Hour)
 	if err != nil {
 		respond(c, nil, err)
 		return
@@ -561,7 +581,7 @@ func (a *API) me(c *gin.Context) {
 		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized", "message": "session authentication required"}})
 		return
 	}
-	user, err := a.store.GetUser(c, *principal.UserID)
+	user, err := a.store.GetUser(c.Request.Context(), *principal.UserID)
 	respond(c, user, err)
 }
 
@@ -570,12 +590,13 @@ func (a *API) getMessageProvider(c *gin.Context) {
 		respond(c, nil, errors.New("message providers are unavailable"))
 		return
 	}
-	active, err := a.registry.Active(c)
+	requestContext := c.Request.Context()
+	active, err := a.registry.Active(requestContext)
 	if err != nil {
 		respond(c, nil, err)
 		return
 	}
-	c.JSON(http.StatusOK, gin.H{"data": gin.H{"provider": active.Name(), "providers": a.registry.Capabilities(c)}})
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"provider": active.Name(), "providers": a.registry.Capabilities(requestContext)}})
 }
 
 func (a *API) setMessageProvider(c *gin.Context) {
@@ -588,7 +609,7 @@ func (a *API) setMessageProvider(c *gin.Context) {
 	if !decode(c, &input) {
 		return
 	}
-	if err := a.registry.Select(c, input.Provider); err != nil {
+	if err := a.registry.Select(c.Request.Context(), input.Provider); err != nil {
 		respond(c, nil, err)
 		return
 	}
@@ -600,17 +621,7 @@ func (a *API) checkMessageProvider(c *gin.Context) {
 		return
 	}
 	providerName := domain.MessageProvider(c.Param("provider"))
-	provider, ok := a.registry.Provider(providerName)
-	if !ok {
-		respond(c, nil, fmt.Errorf("message provider %s is not available", providerName))
-		return
-	}
-	err := provider.Check(c)
-	capabilities := provider.Capabilities(c)
-	if err != nil {
-		capabilities.Healthy = false
-		capabilities.Reason = err.Error()
-	}
+	capabilities, err := a.registry.Check(c.Request.Context(), providerName)
 	respond(c, capabilities, err)
 }
 
@@ -623,7 +634,7 @@ func (a *API) listIdentities(c *gin.Context) {
 		c.Status(http.StatusBadRequest)
 		return
 	}
-	rows, err := a.store.ListMessageProviderIdentities(c, userID)
+	rows, err := a.store.ListMessageProviderIdentities(c.Request.Context(), userID)
 	respond(c, rows, err)
 }
 
@@ -644,7 +655,7 @@ func (a *API) createIdentity(c *gin.Context) {
 	if !decode(c, &input) {
 		return
 	}
-	err := a.store.UpsertExternalIdentity(c, domain.ExternalIdentity{UserID: userID, Provider: input.Provider, SubjectID: input.SubjectID, DisplayName: input.DisplayName})
+	err := a.store.UpsertExternalIdentity(c.Request.Context(), domain.ExternalIdentity{UserID: userID, Provider: input.Provider, SubjectID: input.SubjectID, DisplayName: input.DisplayName})
 	respond(c, nil, err)
 }
 func requireAdmin(c *gin.Context) bool {
@@ -863,12 +874,8 @@ func (a *API) OAuthCallback(c *gin.Context) {
 	c.Redirect(http.StatusFound, "/")
 }
 
-func (a *API) feishuLoginAvailable(ctx context.Context) bool {
-	if a.registry == nil || a.feishu == nil {
-		return false
-	}
-	provider, ok := a.registry.Provider(domain.MessageProviderFeishu)
-	return ok && provider.Capabilities(ctx).Configured
+func (a *API) feishuLoginAvailable(_ context.Context) bool {
+	return a.feishu != nil && a.feishu.Configured() && a.store != nil && a.tokens != nil
 }
 func (a *API) Events(c *gin.Context) {
 	after, _ := strconv.ParseInt(c.GetHeader("Last-Event-ID"), 10, 64)

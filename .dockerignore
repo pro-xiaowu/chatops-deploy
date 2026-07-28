@@ -1,0 +1,9 @@
+.git
+.worktrees
+.tools
+web/node_modules
+web/dist
+coverage
+test-results
+playwright-report
+chatops-deploy-conversation-export.md

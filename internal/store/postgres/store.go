@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"chatops-deploy/internal/domain"
+	"chatops-deploy/internal/messaging"
 	"github.com/google/uuid"
 	"gorm.io/datatypes"
 	"gorm.io/gorm"
@@ -398,6 +399,21 @@ func (s *Store) TransitionOperation(ctx context.Context, id uuid.UUID, from, to 
 	o, _ := s.GetOperation(ctx, id)
 	return s.AppendEvent(ctx, id, &o.ApplicationID, "operation.status", map[string]any{"status": to})
 }
+
+func (s *Store) TransitionOperationWithNotification(ctx context.Context, id uuid.UUID, from, to domain.OperationStatus, code, message string, notification *messaging.Notification, provider domain.MessageProvider) error {
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		store := New(tx)
+		if err := store.TransitionOperation(ctx, id, from, to, code, message); err != nil {
+			return err
+		}
+		if notification != nil {
+			if err := store.EnqueueNotification(ctx, *notification, provider); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
 func (s *Store) Approve(ctx context.Context, id, approver uuid.UUID, decision, comment string) error {
 	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
 		var o OperationModel
@@ -447,6 +463,56 @@ func (s *Store) ClaimOperation(ctx context.Context, owner string) (domain.Operat
 func (s *Store) AppendEvent(ctx context.Context, opID uuid.UUID, appID *uuid.UUID, kind string, payload any) error {
 	body, _ := json.Marshal(payload)
 	return s.DB.WithContext(ctx).Create(&OperationEventModel{OperationID: &opID, ApplicationID: appID, Kind: kind, Payload: datatypes.JSON(body)}).Error
+}
+
+func (s *Store) EnqueueNotification(ctx context.Context, notification messaging.Notification, provider domain.MessageProvider) error {
+	body, err := json.Marshal(notification)
+	if err != nil {
+		return err
+	}
+	return s.DB.WithContext(ctx).Create(&OutboxModel{Topic: "operation.notification", Provider: string(provider), Destination: notification.Destination, Payload: datatypes.JSON(body)}).Error
+}
+
+func (s *Store) PendingOutbox(ctx context.Context, limit int) ([]OutboxModel, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	var rows []OutboxModel
+	err := s.DB.WithContext(ctx).Where("sent_at IS NULL AND next_attempt_at <= now()").Order("created_at").Limit(limit).Find(&rows).Error
+	return rows, err
+}
+
+func (s *Store) ClaimOutbox(ctx context.Context, limit int, lease time.Duration) ([]OutboxModel, error) {
+	if limit <= 0 || limit > 100 {
+		limit = 50
+	}
+	if lease <= 0 {
+		lease = 30 * time.Second
+	}
+	var rows []OutboxModel
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Raw("SELECT * FROM outbox_messages WHERE sent_at IS NULL AND next_attempt_at <= now() ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT ?", limit).Scan(&rows).Error; err != nil {
+			return err
+		}
+		if len(rows) == 0 {
+			return nil
+		}
+		ids := make([]uuid.UUID, 0, len(rows))
+		for _, row := range rows {
+			ids = append(ids, row.ID)
+		}
+		return tx.Model(&OutboxModel{}).Where("id IN ? AND sent_at IS NULL", ids).Update("next_attempt_at", time.Now().Add(lease)).Error
+	})
+	return rows, err
+}
+
+func (s *Store) MarkOutboxSent(ctx context.Context, id uuid.UUID) error {
+	now := time.Now()
+	return s.DB.WithContext(ctx).Model(&OutboxModel{}).Where("id = ? AND sent_at IS NULL", id).Update("sent_at", now).Error
+}
+
+func (s *Store) MarkOutboxFailed(ctx context.Context, id uuid.UUID, sendErr error) error {
+	return s.DB.WithContext(ctx).Model(&OutboxModel{}).Where("id = ? AND sent_at IS NULL", id).Updates(map[string]any{"attempts": gorm.Expr("attempts + 1"), "next_attempt_at": gorm.Expr("now() + interval '5 seconds'"), "last_error": sendErr.Error()}).Error
 }
 
 func (s *Store) RecentEvents(ctx context.Context, after int64, limit int) ([]OperationEventModel, error) {

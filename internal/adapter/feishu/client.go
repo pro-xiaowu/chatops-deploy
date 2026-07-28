@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -21,6 +22,10 @@ type Client struct {
 
 func NewClient(appID, secret, baseURL string) *Client {
 	return &Client{appID: appID, appSecret: secret, baseURL: baseURL, http: &http.Client{Timeout: 10 * time.Second}}
+}
+
+func (c *Client) Configured() bool {
+	return c != nil && strings.TrimSpace(c.appID) != "" && strings.TrimSpace(c.appSecret) != "" && strings.TrimSpace(c.baseURL) != ""
 }
 func (c *Client) tenantToken(ctx context.Context) (string, error) {
 	c.mu.Lock()

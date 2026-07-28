@@ -1,10 +1,11 @@
 # chatops-deploy
 
-在飞书群或 Web 运维控制台中创建 Kubernetes Deployment 的部署、回滚、审批与状态查询操作。服务使用 PostgreSQL 持久化操作状态和审计记录，使用 `client-go` 操作预注册应用，生产环境变更必须经过另一名授权用户审批。
+在飞书、企业微信、钉钉或 Web 运维控制台中创建 Kubernetes Deployment 的部署、回滚、审批与状态查询操作。服务使用 PostgreSQL 持久化操作状态和审计记录，使用 `client-go` 操作预注册应用，生产环境变更必须经过另一名授权用户审批。
 
 ## 功能
 
-- 飞书 `/deploy`、`/rollback`、`/status` 和 `/help` 命令入口
+- 飞书、企业微信和钉钉 `/deploy`、`/rollback`、`/approve`、`/status` 和 `/help` 命令入口
+- 管理员可选择飞书、企业微信、钉钉或仅 Web 控制台消息模式
 - 飞书 OAuth 登录和同域 Web 控制台
 - 多集群 kubeconfig AES-256-GCM 加密存储
 - Deployment 镜像部署、rollout 观察、ReplicaSet revision 回滚
@@ -14,34 +15,34 @@
 
 ## 本地运行
 
-需要 Go 1.22+、Node 22+、Docker 和 PostgreSQL 17+。
+本项目本地部署只支持 Linux。需要 Docker Engine、Docker Compose v2 和 `curl`。
 
-```powershell
-docker compose up -d postgres
-Copy-Item .env.example .env
+```bash
+docker compose up --build -d
+docker compose ps
+curl --fail http://localhost:8080/readyz
 ```
 
-生成 32 字节主密钥并写入 `CHATOPS_SECURITY_KUBECONFIG_MASTER_KEY`：
+浏览器打开 `http://localhost:8080`，点击“本地开发登录”。Compose 默认使用 `CHATOPS_RUNTIME_ENV=development`、`CHATOPS_DEV_AUTH_ENABLED=true` 和 `CHATOPS_MESSAGE_PROVIDER=web`；这些凭据和开关只用于本地开发。
 
-```powershell
-[Convert]::ToBase64String((1..32 | ForEach-Object { Get-Random -Maximum 256 }))
+```bash
+docker compose logs -f app
+docker compose down
 ```
 
-设置数据库 URL、飞书凭据和引导管理 Token 后运行：
+需要清空本地数据库时，显式删除数据卷：
 
-```powershell
-go run ./cmd/server
-npm --prefix web install
-npm --prefix web run dev
+```bash
+docker compose down --volumes
 ```
 
-服务默认监听 `:8080`。`/healthz` 表示进程存活，`/readyz` 表示数据库与迁移完成。首次设置 `CHATOPS_SECURITY_BOOTSTRAP_ADMIN_TOKEN` 时会创建唯一的管理员 Token；请妥善保存它，数据库只保存 Token 的指纹和 Argon2id 验证值。
+服务默认监听 `:8080`。`/healthz` 表示进程存活，`/readyz` 表示数据库与迁移完成。完整的 Linux 运行、消息平台配置和测试说明见 [docs/local-development.md](docs/local-development.md)。
 
 ## 部署
 
 修改 `deployments/kubernetes/deployment.yaml` 中的镜像地址和公开 URL，创建包含 `.env.example` 所列键的 `chatops-deploy-secrets`，然后应用：
 
-```powershell
+```bash
 kubectl apply -f deployments/kubernetes/namespace.yaml
 kubectl apply -f deployments/kubernetes/serviceaccount-rbac.yaml
 kubectl apply -f deployments/kubernetes/deployment.yaml
@@ -66,5 +67,6 @@ ghcr.io/<GitHub owner>/chatops-deploy:latest
 - 不允许自由指定 Kubernetes 资源；应用环境必须预注册。
 - 不记录 kubeconfig、密钥、Token 明文或飞书凭据。
 - 生产操作拒绝请求人自批。
+- 外部回调必须通过平台验证 Token 或请求签名校验，缺少签名的请求会被拒绝。
 - 执行器仅更新指定 Deployment 的指定容器，镜像必须匹配注册仓库前缀。
 - 运行生产环境前，请通过 Ingress、NetworkPolicy 和 Secret 管理器限制 API、指标及数据库访问。

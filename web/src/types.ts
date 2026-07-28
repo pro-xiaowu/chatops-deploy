@@ -3,6 +3,7 @@ export type Application={id:string;name:string;description:string;enabled:boolea
 export type Environment={id:string;application_id:string;name:'development'|'test'|'production';cluster_id:string;namespace:string;deployment:string;container:string;image_prefix:string;approval_required:boolean;rollout_timeout_seconds:number}
 export type Operation={id:string;kind:'deploy'|'rollback';status:string;application_id:string;environment_id:string;requester_id:string;image?:string;revision?:number;error_message?:string;created_at:string;updated_at:string}
 export type User={id:string;feishu_open_id:string;display_name:string;enabled:boolean}
+export type ExternalIdentity={id:string;user_id:string;provider:MessageProvider;subject_id:string;display_name:string}
 export type MessageProvider='web'|'feishu'|'wecom'|'dingtalk'
 export type ProviderCapability={provider:MessageProvider;configured:boolean;healthy:boolean;reason?:string}
 export type Capabilities={dev_login:boolean;feishu_login:boolean;message_providers:ProviderCapability[]}

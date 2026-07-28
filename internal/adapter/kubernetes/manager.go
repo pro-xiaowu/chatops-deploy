@@ -177,7 +177,7 @@ func (m *Manager) wait(ctx context.Context, client *kubernetes.Clientset, e doma
 		}
 	}
 }
-func deploymentStatus(ctx context.Context, client *kubernetes.Clientset, e domain.AppEnvironment, desired int32) (RolloutStatus, error) {
+func deploymentStatus(ctx context.Context, client kubernetes.Interface, e domain.AppEnvironment, desired int32) (RolloutStatus, error) {
 	dep, err := client.AppsV1().Deployments(e.Namespace).Get(ctx, e.Deployment, metav1.GetOptions{})
 	if err != nil {
 		return RolloutStatus{}, err
