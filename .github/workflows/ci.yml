@@ -27,7 +27,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with: {go-version-file: go.mod, cache: true}
-      - run: gofmt -d $(find . -name '*.go' -not -path './.tools/*') | tee /tmp/gofmt.diff && test ! -s /tmp/gofmt.diff
+      - run: find . -name '*.go' -not -path './.tools/*' -print0 | xargs -0 gofmt -d | tee /tmp/gofmt.diff && test ! -s /tmp/gofmt.diff
       - run: go vet ./...
       - run: go test ./... -race -coverprofile=coverage.out
       - uses: actions/upload-artifact@v4
