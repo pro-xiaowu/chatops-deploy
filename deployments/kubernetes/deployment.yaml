@@ -16,7 +16,7 @@ spec:
       serviceAccountName: chatops-deploy
       containers:
         - name: server
-          image: ghcr.io/OWNER/chatops-deploy:latest
+          image: ghcr.io/pro-xiaowu/chatops-deploy:latest
           ports:
             - name: http
               containerPort: 8080
