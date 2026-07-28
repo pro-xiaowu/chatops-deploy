@@ -1,0 +1,53 @@
+openapi: 3.1.0
+info:
+  title: chatops-deploy API
+  version: 0.1.0
+  description: Kubernetes ChatOps catalog, operations and approval API.
+servers:
+  - url: /api/v1
+security:
+  - bearerAuth: []
+paths:
+  /clusters:
+    get: {operationId: listClusters, responses: {'200': {$ref: '#/components/responses/Success'}}}
+    post: {operationId: createCluster, requestBody: {$ref: '#/components/requestBodies/JSON'}, responses: {'201': {$ref: '#/components/responses/Success'}}}
+  /applications:
+    get: {operationId: listApplications, responses: {'200': {$ref: '#/components/responses/Success'}}}
+    post: {operationId: createApplication, requestBody: {$ref: '#/components/requestBodies/JSON'}, responses: {'201': {$ref: '#/components/responses/Success'}}}
+  /environments:
+    get: {operationId: listEnvironments, responses: {'200': {$ref: '#/components/responses/Success'}}}
+    post: {operationId: createEnvironment, requestBody: {$ref: '#/components/requestBodies/JSON'}, responses: {'201': {$ref: '#/components/responses/Success'}}}
+  /operations:
+    get: {operationId: listOperations, responses: {'200': {$ref: '#/components/responses/Success'}}}
+    post: {operationId: createOperation, requestBody: {$ref: '#/components/requestBodies/JSON'}, responses: {'201': {$ref: '#/components/responses/Success'}}}
+  /operations/{id}:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    get: {operationId: getOperation, responses: {'200': {$ref: '#/components/responses/Success'}}}
+  /operations/{id}/approval:
+    parameters: [{$ref: '#/components/parameters/ID'}]
+    post: {operationId: decideOperation, requestBody: {$ref: '#/components/requestBodies/JSON'}, responses: {'200': {$ref: '#/components/responses/Success'}}}
+  /users:
+    get: {operationId: listUsers, responses: {'200': {$ref: '#/components/responses/Success'}}}
+    post: {operationId: createUser, requestBody: {$ref: '#/components/requestBodies/JSON'}, responses: {'201': {$ref: '#/components/responses/Success'}}}
+components:
+  securitySchemes:
+    bearerAuth: {type: http, scheme: bearer}
+  parameters:
+    ID: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+  requestBodies:
+    JSON: {required: true, content: {application/json: {schema: {type: object, additionalProperties: true}}}}
+  responses:
+    Success: {description: Successful response, content: {application/json: {schema: {$ref: '#/components/schemas/Envelope'}}}}
+  schemas:
+    Envelope:
+      type: object
+      properties:
+        data: {}
+        error: {$ref: '#/components/schemas/Error'}
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        request_id: {type: string}

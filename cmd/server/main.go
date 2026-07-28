@@ -8,10 +8,19 @@ import (
 	"net/http"
 	"os/signal"
 	"syscall"
+	"time"
 
+	"chatops-deploy/internal/adapter/feishu"
+	kubeadapter "chatops-deploy/internal/adapter/kubernetes"
+	"chatops-deploy/internal/application"
+	"chatops-deploy/internal/auth"
 	"chatops-deploy/internal/config"
 	"chatops-deploy/internal/logging"
+	"chatops-deploy/internal/security"
+	storepostgres "chatops-deploy/internal/store/postgres"
 	transporthttp "chatops-deploy/internal/transport/http"
+	transporthandler "chatops-deploy/internal/transport/http/handler"
+	"chatops-deploy/internal/worker"
 	"go.uber.org/zap"
 )
 
@@ -36,9 +45,39 @@ func main() {
 }
 
 func run(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
+	openCtx, cancelOpen := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelOpen()
+	db, sqlDB, err := storepostgres.Open(openCtx, cfg.Database.URL, cfg.Database.MaxOpenConns, cfg.Database.MaxIdleConns, cfg.Database.ConnMaxLifetime)
+	if err != nil {
+		return err
+	}
+	defer sqlDB.Close()
+	if err = storepostgres.Migrate(openCtx, db); err != nil {
+		return err
+	}
+	box, err := security.NewSecretBox(cfg.Security.KubeconfigMasterKey)
+	if err != nil {
+		return err
+	}
+	store := storepostgres.New(db)
+	tokens := auth.New(db)
+	if err = tokens.EnsureBootstrap(openCtx, cfg.Security.BootstrapAdminToken); err != nil {
+		return err
+	}
+	app := application.New(store, box)
+	feishuClient := feishu.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret, cfg.Feishu.APIBaseURL)
+	api := transporthandler.NewAPI(app, store, tokens, feishuClient, cfg.Feishu.VerificationToken, cfg.Feishu.EncryptKey, cfg.Security.PublicBaseURL, cfg.Security.CookieSecure)
+	kube := kubeadapter.NewManager(store, box)
 	router := transporthttp.NewRouter(transporthttp.Dependencies{
-		Readiness: func(context.Context) error { return nil },
+		Readiness: store.Ready, API: api, Tokens: tokens,
 	})
+	if cfg.Mode == "all" || cfg.Mode == "worker" {
+		go worker.New(cfg.Worker.ID, cfg.Worker.PollInterval, store, kube, logger).Run(ctx)
+	}
+	if cfg.Mode == "worker" {
+		<-ctx.Done()
+		return nil
+	}
 	server := &http.Server{
 		Addr:    cfg.HTTP.Addr,
 		Handler: router,

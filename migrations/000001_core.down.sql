@@ -1,0 +1,1 @@
+DROP TABLE IF EXISTS target_leases,operation_events,outbox_messages,inbox_events,audit_events,approvals,operations,app_permissions,app_environments,applications,clusters,oauth_states,web_sessions,api_tokens,user_roles,roles,users CASCADE;

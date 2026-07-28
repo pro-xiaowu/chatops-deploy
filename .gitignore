@@ -1,2 +1,6 @@
 .tools/
-
+server.exe
+.env
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo

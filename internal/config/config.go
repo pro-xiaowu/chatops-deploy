@@ -15,6 +15,9 @@ type Config struct {
 	HTTP     HTTPConfig     `mapstructure:"http"`
 	Database DatabaseConfig `mapstructure:"database"`
 	Log      LogConfig      `mapstructure:"log"`
+	Security SecurityConfig `mapstructure:"security"`
+	Feishu   FeishuConfig   `mapstructure:"feishu"`
+	Worker   WorkerConfig   `mapstructure:"worker"`
 }
 
 type HTTPConfig struct {
@@ -34,6 +37,26 @@ type LogConfig struct {
 	Development bool   `mapstructure:"development"`
 }
 
+type SecurityConfig struct {
+	KubeconfigMasterKey string `mapstructure:"kubeconfig_master_key"`
+	BootstrapAdminToken string `mapstructure:"bootstrap_admin_token"`
+	PublicBaseURL       string `mapstructure:"public_base_url"`
+	CookieSecure        bool   `mapstructure:"cookie_secure"`
+}
+type FeishuConfig struct {
+	AppID             string `mapstructure:"app_id"`
+	AppSecret         string `mapstructure:"app_secret"`
+	VerificationToken string `mapstructure:"verification_token"`
+	EncryptKey        string `mapstructure:"encrypt_key"`
+	APIBaseURL        string `mapstructure:"api_base_url"`
+}
+type WorkerConfig struct {
+	ID           string        `mapstructure:"id"`
+	PollInterval time.Duration `mapstructure:"poll_interval"`
+	LeaseTTL     time.Duration `mapstructure:"lease_ttl"`
+	MaxAttempts  int           `mapstructure:"max_attempts"`
+}
+
 func Load() (Config, error) {
 	v := viper.New()
 	v.SetDefault("mode", "all")
@@ -44,6 +67,12 @@ func Load() (Config, error) {
 	v.SetDefault("database.conn_max_lifetime", 30*time.Minute)
 	v.SetDefault("log.level", "info")
 	v.SetDefault("log.development", false)
+	v.SetDefault("security.cookie_secure", true)
+	v.SetDefault("feishu.api_base_url", "https://open.feishu.cn")
+	v.SetDefault("worker.id", "chatops-worker")
+	v.SetDefault("worker.poll_interval", time.Second)
+	v.SetDefault("worker.lease_ttl", 30*time.Second)
+	v.SetDefault("worker.max_attempts", 3)
 
 	v.SetEnvPrefix("CHATOPS")
 	v.SetEnvKeyReplacer(strings.NewReplacer(".", "_"))
@@ -58,6 +87,9 @@ func Load() (Config, error) {
 		"database.conn_max_lifetime",
 		"log.level",
 		"log.development",
+		"security.kubeconfig_master_key", "security.bootstrap_admin_token", "security.public_base_url", "security.cookie_secure",
+		"feishu.app_id", "feishu.app_secret", "feishu.verification_token", "feishu.encrypt_key", "feishu.api_base_url",
+		"worker.id", "worker.poll_interval", "worker.lease_ttl", "worker.max_attempts",
 	} {
 		if err := v.BindEnv(key); err != nil {
 			return Config{}, fmt.Errorf("bind environment variable %s: %w", key, err)
@@ -88,6 +120,9 @@ func Load() (Config, error) {
 
 	if strings.TrimSpace(cfg.Database.URL) == "" {
 		return Config{}, errors.New("database.url is required")
+	}
+	if strings.TrimSpace(cfg.Security.KubeconfigMasterKey) == "" {
+		return Config{}, errors.New("security.kubeconfig_master_key is required")
 	}
 	switch cfg.Mode {
 	case "all", "api", "worker":
