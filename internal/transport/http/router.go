@@ -37,7 +37,9 @@ func NewRouter(deps Dependencies) *gin.Engine {
 	})
 	router.GET("/metrics", gin.WrapH(promhttp.Handler()))
 	if deps.API != nil {
-		router.POST("/webhooks/feishu", deps.API.FeishuWebhook)
+		router.GET("/auth/capabilities", deps.API.Capabilities)
+		router.POST("/auth/dev/login", deps.API.DevLogin)
+		router.POST("/webhooks/:provider", deps.API.Webhook)
 		router.GET("/auth/feishu/login", deps.API.Login)
 		router.GET("/auth/feishu/callback", deps.API.OAuthCallback)
 		if deps.Tokens != nil {

@@ -38,6 +38,11 @@ func (r *Registry) Active(ctx context.Context) (Provider, error) {
 	return provider, nil
 }
 
+func (r *Registry) Provider(name domain.MessageProvider) (Provider, bool) {
+	provider, ok := r.providers[name]
+	return provider, ok
+}
+
 func (r *Registry) Select(ctx context.Context, name domain.MessageProvider) error {
 	provider, ok := r.providers[name]
 	if !ok {

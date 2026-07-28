@@ -111,6 +111,14 @@ func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 	}
 	return out, err
 }
+
+func (s *Store) GetUser(ctx context.Context, userID uuid.UUID) (domain.User, error) {
+	var row UserModel
+	if err := s.DB.WithContext(ctx).First(&row, "id = ?", userID).Error; err != nil {
+		return domain.User{}, mapError(err)
+	}
+	return userDomain(row), nil
+}
 func (s *Store) CreateUser(ctx context.Context, u domain.User) (domain.User, error) {
 	var feishuOpenID *string
 	if value := strings.TrimSpace(u.FeishuOpenID); value != "" {
@@ -296,6 +304,13 @@ func (s *Store) SetActiveMessageProvider(ctx context.Context, provider domain.Me
 		}
 		return tx.Exec("INSERT INTO system_settings(key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()", "active_message_provider", provider).Error
 	})
+}
+
+func (s *Store) InitializeActiveMessageProvider(ctx context.Context, provider domain.MessageProvider) error {
+	if err := domain.ValidateMessageProvider(provider); err != nil {
+		return err
+	}
+	return s.DB.WithContext(ctx).Exec("INSERT INTO system_settings(key, value) VALUES (?, ?) ON CONFLICT (key) DO NOTHING", "active_message_provider", provider).Error
 }
 
 func userDomain(row UserModel) domain.User {

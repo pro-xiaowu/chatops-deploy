@@ -46,6 +46,10 @@ func (s *Service) CreateEnvironment(ctx context.Context, e domain.AppEnvironment
 	return s.store.CreateEnvironment(ctx, e)
 }
 func (s *Service) RequestOperation(ctx context.Context, requester uuid.UUID, kind domain.OperationKind, envID uuid.UUID, image string, revision int64, key string) (domain.Operation, error) {
+	return s.RequestOperationWithOrigin(ctx, requester, kind, envID, image, revision, key, domain.MessageOrigin{Provider: domain.MessageProviderWeb})
+}
+
+func (s *Service) RequestOperationWithOrigin(ctx context.Context, requester uuid.UUID, kind domain.OperationKind, envID uuid.UUID, image string, revision int64, key string, origin domain.MessageOrigin) (domain.Operation, error) {
 	env, err := s.store.GetEnvironment(ctx, envID)
 	if err != nil {
 		return domain.Operation{}, err
@@ -57,7 +61,10 @@ func (s *Service) RequestOperation(ctx context.Context, requester uuid.UUID, kin
 	if env.ApprovalRequired {
 		status = domain.StatusPendingApproval
 	}
-	return s.store.CreateOperation(ctx, domain.Operation{Kind: kind, Status: status, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, RequesterID: requester, Image: image, Revision: revision, IdempotencyKey: key})
+	if origin.Provider == "" {
+		origin.Provider = domain.MessageProviderWeb
+	}
+	return s.store.CreateOperation(ctx, domain.Operation{Kind: kind, Status: status, ApplicationID: env.ApplicationID, EnvironmentID: env.ID, RequesterID: requester, Image: image, Revision: revision, IdempotencyKey: key, MessageProvider: origin.Provider, ConversationID: origin.ConversationID, EventID: origin.EventID})
 }
 func (s *Service) Decide(ctx context.Context, operationID, approverID uuid.UUID, decision, comment string) error {
 	if decision != "approved" && decision != "rejected" {

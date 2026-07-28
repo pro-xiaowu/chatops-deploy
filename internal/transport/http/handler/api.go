@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -12,27 +13,189 @@ import (
 	"chatops-deploy/internal/application"
 	"chatops-deploy/internal/auth"
 	"chatops-deploy/internal/domain"
+	"chatops-deploy/internal/messaging"
 	"chatops-deploy/internal/store/postgres"
 	"chatops-deploy/internal/transport/http/middleware"
 	"github.com/gin-gonic/gin"
 	"github.com/google/uuid"
 )
 
+func (a *API) Capabilities(c *gin.Context) { a.capabilities(c) }
+func (a *API) DevLogin(c *gin.Context)     { a.devLogin(c) }
+
+func (a *API) Webhook(c *gin.Context) {
+	if a.registry == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	requested := domain.MessageProvider(c.Param("provider"))
+	active, err := a.registry.Active(c)
+	if err != nil || active.Name() == domain.MessageProviderWeb || requested != active.Name() {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	body, err := c.GetRawData()
+	if err != nil {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	incoming, err := active.Decode(c, messaging.Request{Method: c.Request.Method, Body: body, Headers: map[string]string{
+		"X-Lark-Request-Timestamp": c.GetHeader("X-Lark-Request-Timestamp"),
+		"X-Lark-Request-Nonce":     c.GetHeader("X-Lark-Request-Nonce"),
+		"X-Lark-Signature":         c.GetHeader("X-Lark-Signature"),
+		"X-WeCom-Token":            c.GetHeader("X-WeCom-Token"),
+		"X-DingTalk-Token":         c.GetHeader("X-DingTalk-Token"),
+	}})
+	if err != nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "invalid_webhook", "message": "provider callback validation failed"}})
+		return
+	}
+	if incoming.Challenge != "" {
+		c.JSON(http.StatusOK, gin.H{"challenge": incoming.Challenge})
+		return
+	}
+	if incoming.OperationID != "" {
+		a.handleIncomingApproval(c, incoming)
+		c.Status(http.StatusOK)
+		return
+	}
+	if incoming.Command == "" {
+		c.Status(http.StatusOK)
+		return
+	}
+	user, err := a.store.FindUserByIdentity(c, incoming.Provider, incoming.SubjectID)
+	if err != nil {
+		_ = active.Send(context.Background(), messaging.Notification{Destination: incoming.ConversationID, Text: "你还没有 ChatOps 权限，请联系管理员。"})
+		c.Status(http.StatusOK)
+		return
+	}
+	principal, err := a.store.PrincipalForUser(c, user.ID)
+	if err != nil {
+		c.Status(http.StatusOK)
+		return
+	}
+	message := a.handleIncomingCommand(c, incoming, user, principal)
+	if message != "" {
+		_ = active.Send(c, messaging.Notification{Destination: incoming.ConversationID, Text: message})
+	}
+	c.Status(http.StatusOK)
+}
+
+func (a *API) handleIncomingApproval(ctx context.Context, incoming messaging.Incoming) {
+	operationID, err := uuid.Parse(incoming.OperationID)
+	if err != nil {
+		return
+	}
+	approver, err := a.store.FindUserByIdentity(ctx, incoming.Provider, incoming.SubjectID)
+	if err != nil {
+		return
+	}
+	principal, err := a.store.PrincipalForUser(ctx, approver.ID)
+	if err != nil {
+		return
+	}
+	operation, err := a.store.GetOperation(ctx, operationID)
+	if err != nil || !principal.Allows(domain.ActionApprove, operation.ApplicationID) {
+		return
+	}
+	_ = a.app.Decide(ctx, operationID, approver.ID, incoming.Decision, "")
+}
+
+func (a *API) handleIncomingCommand(ctx context.Context, incoming messaging.Incoming, user domain.User, principal domain.Principal) string {
+	origin := domain.MessageOrigin{Provider: incoming.Provider, ConversationID: incoming.ConversationID, EventID: incoming.EventID}
+	idempotencyKey := string(incoming.Provider) + ":" + incoming.EventID
+	switch incoming.Command {
+	case "help":
+		return feishu.HelpText()
+	case "deploy":
+		if len(incoming.Arguments) != 2 {
+			return "用法：/deploy <environment-id> <image>"
+		}
+		environmentID, err := uuid.Parse(incoming.Arguments[0])
+		if err != nil {
+			return "环境 ID 格式无效。"
+		}
+		environment, err := a.store.GetEnvironment(ctx, environmentID)
+		if err != nil || !principal.Allows(domain.ActionDeploy, environment.ApplicationID) {
+			return "你没有该应用的部署权限。"
+		}
+		operation, err := a.app.RequestOperationWithOrigin(ctx, user.ID, domain.OperationDeploy, environmentID, incoming.Arguments[1], 0, idempotencyKey, origin)
+		if err != nil {
+			return "创建部署请求失败：" + err.Error()
+		}
+		if operation.Status == domain.StatusPendingApproval {
+			if provider, ok := a.registry.Provider(incoming.Provider); ok {
+				_ = provider.Send(ctx, messaging.Notification{OperationID: operation.ID.String(), Destination: incoming.ConversationID, Text: "生产部署待审批：" + operation.ID.String(), ApprovalCard: feishu.ApprovalCard(operation.ID.String(), "部署", incoming.Arguments[1])})
+			}
+		}
+		return "部署请求已创建，请等待执行或审批。"
+	case "rollback":
+		if len(incoming.Arguments) != 2 {
+			return "用法：/rollback <environment-id> <revision>"
+		}
+		environmentID, parseErr := uuid.Parse(incoming.Arguments[0])
+		revision, revisionErr := strconv.ParseInt(incoming.Arguments[1], 10, 64)
+		if parseErr != nil || revisionErr != nil {
+			return "环境 ID 或 revision 格式无效。"
+		}
+		environment, err := a.store.GetEnvironment(ctx, environmentID)
+		if err != nil || !principal.Allows(domain.ActionRollback, environment.ApplicationID) {
+			return "你没有该应用的回滚权限。"
+		}
+		operation, err := a.app.RequestOperationWithOrigin(ctx, user.ID, domain.OperationRollback, environmentID, "", revision, idempotencyKey, origin)
+		if err != nil {
+			return "创建回滚请求失败：" + err.Error()
+		}
+		if operation.Status == domain.StatusPendingApproval {
+			if provider, ok := a.registry.Provider(incoming.Provider); ok {
+				_ = provider.Send(ctx, messaging.Notification{OperationID: operation.ID.String(), Destination: incoming.ConversationID, Text: "生产回滚待审批：" + operation.ID.String(), ApprovalCard: feishu.ApprovalCard(operation.ID.String(), "回滚", fmt.Sprintf("revision %d", revision))})
+			}
+		}
+		return "回滚请求已创建，请等待执行或审批。"
+	case "status":
+		if len(incoming.Arguments) != 1 {
+			return "用法：/status <environment-id>"
+		}
+		environmentID, err := uuid.Parse(incoming.Arguments[0])
+		if err != nil {
+			return "环境 ID 格式无效。"
+		}
+		environment, err := a.store.GetEnvironment(ctx, environmentID)
+		if err != nil {
+			return "未找到该环境。"
+		}
+		if !principal.Allows(domain.ActionView, environment.ApplicationID) {
+			return "你没有该应用的查看权限。"
+		}
+		return "环境 " + environment.Name + "：" + environment.Namespace + "/" + environment.Deployment
+	default:
+		return feishu.HelpText()
+	}
+}
+
 type API struct {
-	app               *application.Service
-	store             *postgres.Store
-	tokens            *auth.Service
-	feishu            *feishu.Client
-	verificationToken string
-	encryptKey        string
-	baseURL           string
-	cookieSecure      bool
+	app                *application.Service
+	store              *postgres.Store
+	tokens             *auth.Service
+	feishu             *feishu.Client
+	verificationToken  string
+	encryptKey         string
+	baseURL            string
+	cookieSecure       bool
+	registry           *messaging.Registry
+	runtimeEnvironment string
+	devAuthEnabled     bool
 }
 
 func NewAPI(app *application.Service, store *postgres.Store, tokens *auth.Service, client *feishu.Client, verification, encryptKey, baseURL string, cookieSecure bool) *API {
-	return &API{app: app, store: store, tokens: tokens, feishu: client, verificationToken: verification, encryptKey: encryptKey, baseURL: strings.TrimRight(baseURL, "/"), cookieSecure: cookieSecure}
+	return NewAPIWithOptions(app, store, tokens, client, verification, encryptKey, baseURL, cookieSecure, nil, "production", false)
+}
+
+func NewAPIWithOptions(app *application.Service, store *postgres.Store, tokens *auth.Service, client *feishu.Client, verification, encryptKey, baseURL string, cookieSecure bool, registry *messaging.Registry, runtimeEnvironment string, devAuthEnabled bool) *API {
+	return &API{app: app, store: store, tokens: tokens, feishu: client, verificationToken: verification, encryptKey: encryptKey, baseURL: strings.TrimRight(baseURL, "/"), cookieSecure: cookieSecure, registry: registry, runtimeEnvironment: runtimeEnvironment, devAuthEnabled: devAuthEnabled}
 }
 func (a *API) Register(r *gin.RouterGroup) {
+	r.GET("/me", a.me)
 	r.GET("/clusters", a.listClusters)
 	r.POST("/clusters", a.createCluster)
 	r.GET("/applications", a.listApplications)
@@ -52,6 +215,11 @@ func (a *API) Register(r *gin.RouterGroup) {
 	r.POST("/roles/:id/permissions", a.grantPermission)
 	r.POST("/api-tokens", a.issueToken)
 	r.DELETE("/api-tokens/:id", a.revokeToken)
+	r.GET("/settings/message-provider", a.getMessageProvider)
+	r.PUT("/settings/message-provider", a.setMessageProvider)
+	r.POST("/settings/message-provider/:provider/check", a.checkMessageProvider)
+	r.GET("/users/:id/identities", a.listIdentities)
+	r.POST("/users/:id/identities", a.createIdentity)
 }
 func decode(c *gin.Context, v any) bool {
 	if err := c.ShouldBindJSON(v); err != nil {
@@ -353,6 +521,132 @@ func (a *API) revokeToken(c *gin.Context) {
 	}
 	respond(c, nil, a.tokens.Revoke(c, tokenID))
 }
+
+func (a *API) capabilities(c *gin.Context) {
+	providers := []messaging.Capabilities{}
+	feishuLogin := false
+	if a.registry != nil {
+		providers = a.registry.Capabilities(c)
+		for _, provider := range providers {
+			if provider.Provider == domain.MessageProviderFeishu {
+				feishuLogin = provider.Configured
+			}
+		}
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"dev_login": a.runtimeEnvironment == "development" && a.devAuthEnabled, "feishu_login": feishuLogin, "message_providers": providers}})
+}
+
+func (a *API) devLogin(c *gin.Context) {
+	if a.runtimeEnvironment != "development" || !a.devAuthEnabled || a.store == nil || a.tokens == nil {
+		c.Status(http.StatusNotFound)
+		return
+	}
+	user, err := a.store.EnsureDevelopmentAdmin(c)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	session, err := a.tokens.CreateSession(c, user, 8*time.Hour)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	setSessionCookies(c, session, a.cookieSecure)
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"user": user}})
+}
+
+func (a *API) me(c *gin.Context) {
+	principal, ok := middleware.Principal(c)
+	if !ok || principal.UserID == nil {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": gin.H{"code": "unauthorized", "message": "session authentication required"}})
+		return
+	}
+	user, err := a.store.GetUser(c, *principal.UserID)
+	respond(c, user, err)
+}
+
+func (a *API) getMessageProvider(c *gin.Context) {
+	if a.registry == nil {
+		respond(c, nil, errors.New("message providers are unavailable"))
+		return
+	}
+	active, err := a.registry.Active(c)
+	if err != nil {
+		respond(c, nil, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"provider": active.Name(), "providers": a.registry.Capabilities(c)}})
+}
+
+func (a *API) setMessageProvider(c *gin.Context) {
+	if !requireAdmin(c) || a.registry == nil {
+		return
+	}
+	var input struct {
+		Provider domain.MessageProvider `json:"provider"`
+	}
+	if !decode(c, &input) {
+		return
+	}
+	if err := a.registry.Select(c, input.Provider); err != nil {
+		respond(c, nil, err)
+		return
+	}
+	c.JSON(http.StatusOK, gin.H{"data": gin.H{"provider": input.Provider}})
+}
+
+func (a *API) checkMessageProvider(c *gin.Context) {
+	if !requireAdmin(c) || a.registry == nil {
+		return
+	}
+	providerName := domain.MessageProvider(c.Param("provider"))
+	provider, ok := a.registry.Provider(providerName)
+	if !ok {
+		respond(c, nil, fmt.Errorf("message provider %s is not available", providerName))
+		return
+	}
+	err := provider.Check(c)
+	capabilities := provider.Capabilities(c)
+	if err != nil {
+		capabilities.Healthy = false
+		capabilities.Reason = err.Error()
+	}
+	respond(c, capabilities, err)
+}
+
+func (a *API) listIdentities(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	userID, ok := id(c.Param("id"))
+	if !ok {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	rows, err := a.store.ListMessageProviderIdentities(c, userID)
+	respond(c, rows, err)
+}
+
+func (a *API) createIdentity(c *gin.Context) {
+	if !requireAdmin(c) {
+		return
+	}
+	userID, ok := id(c.Param("id"))
+	if !ok {
+		c.Status(http.StatusBadRequest)
+		return
+	}
+	var input struct {
+		Provider    domain.MessageProvider `json:"provider"`
+		SubjectID   string                 `json:"subject_id"`
+		DisplayName string                 `json:"display_name"`
+	}
+	if !decode(c, &input) {
+		return
+	}
+	err := a.store.UpsertExternalIdentity(c, domain.ExternalIdentity{UserID: userID, Provider: input.Provider, SubjectID: input.SubjectID, DisplayName: input.DisplayName})
+	respond(c, nil, err)
+}
 func requireAdmin(c *gin.Context) bool {
 	principal, ok := middleware.Principal(c)
 	if !ok || !principal.Allows(domain.ActionAdmin, uuid.Nil) {
@@ -532,12 +826,20 @@ func (a *API) handleCommand(ctx context.Context, event feishu.Event, user domain
 	}
 }
 func (a *API) Login(c *gin.Context) {
+	if !a.feishuLoginAvailable(c) {
+		c.Status(http.StatusNotFound)
+		return
+	}
 	state := uuid.NewString()
 	c.SetCookie("chatops_oauth_state", state, 300, "/", "", a.cookieSecure, true)
 	redirect := a.baseURL + "/auth/feishu/callback"
 	c.Redirect(http.StatusFound, a.feishu.OAuthURL(redirect, state))
 }
 func (a *API) OAuthCallback(c *gin.Context) {
+	if !a.feishuLoginAvailable(c) {
+		c.Status(http.StatusNotFound)
+		return
+	}
 	if c.Query("state") == "" || c.Query("state") != cookie(c, "chatops_oauth_state") {
 		c.Redirect(http.StatusFound, "/?auth=failed")
 		return
@@ -557,10 +859,16 @@ func (a *API) OAuthCallback(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/?auth=failed")
 		return
 	}
-	c.SetCookie("chatops_session", session.Cookie, int((8 * time.Hour).Seconds()), "/", "", a.cookieSecure, true)
-	c.SetSameSite(http.SameSiteLaxMode)
-	c.SetCookie("chatops_csrf", session.CSRF, int((8 * time.Hour).Seconds()), "/", "", a.cookieSecure, false)
+	setSessionCookies(c, session, a.cookieSecure)
 	c.Redirect(http.StatusFound, "/")
+}
+
+func (a *API) feishuLoginAvailable(ctx context.Context) bool {
+	if a.registry == nil || a.feishu == nil {
+		return false
+	}
+	provider, ok := a.registry.Provider(domain.MessageProviderFeishu)
+	return ok && provider.Capabilities(ctx).Configured
 }
 func (a *API) Events(c *gin.Context) {
 	after, _ := strconv.ParseInt(c.GetHeader("Last-Event-ID"), 10, 64)
@@ -587,5 +895,12 @@ func (a *API) Events(c *gin.Context) {
 	}
 }
 func cookie(c *gin.Context, name string) string { v, _ := c.Cookie(name); return v }
+
+func setSessionCookies(c *gin.Context, session auth.Session, secure bool) {
+	maxAge := int((8 * time.Hour).Seconds())
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie("chatops_session", session.Cookie, maxAge, "/", "", secure, true)
+	c.SetCookie("chatops_csrf", session.CSRF, maxAge, "/", "", secure, false)
+}
 
 var _ = middleware.Principal

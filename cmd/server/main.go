@@ -10,12 +10,17 @@ import (
 	"syscall"
 	"time"
 
+	"chatops-deploy/internal/adapter/dingtalk"
 	"chatops-deploy/internal/adapter/feishu"
 	kubeadapter "chatops-deploy/internal/adapter/kubernetes"
+	messagingweb "chatops-deploy/internal/adapter/messaging"
+	"chatops-deploy/internal/adapter/wecom"
 	"chatops-deploy/internal/application"
 	"chatops-deploy/internal/auth"
 	"chatops-deploy/internal/config"
+	"chatops-deploy/internal/domain"
 	"chatops-deploy/internal/logging"
+	"chatops-deploy/internal/messaging"
 	"chatops-deploy/internal/security"
 	storepostgres "chatops-deploy/internal/store/postgres"
 	transporthttp "chatops-deploy/internal/transport/http"
@@ -66,13 +71,33 @@ func run(ctx context.Context, cfg config.Config, logger *zap.Logger) error {
 	}
 	app := application.New(store, box)
 	feishuClient := feishu.NewClient(cfg.Feishu.AppID, cfg.Feishu.AppSecret, cfg.Feishu.APIBaseURL)
-	api := transporthandler.NewAPI(app, store, tokens, feishuClient, cfg.Feishu.VerificationToken, cfg.Feishu.EncryptKey, cfg.Security.PublicBaseURL, cfg.Security.CookieSecure)
+	providers := []messaging.Provider{
+		messagingweb.New(),
+		feishu.NewProvider(cfg.Feishu),
+		wecom.NewProvider(cfg.WeCom),
+		dingtalk.NewProvider(cfg.DingTalk),
+	}
+	registry := messaging.NewRegistry(store, providers)
+	configuredProvider := domain.MessageProvider(cfg.MessageProvider)
+	provider, ok := registry.Provider(configuredProvider)
+	if !ok || !provider.Capabilities(openCtx).Configured {
+		return fmt.Errorf("configured message provider %s is unavailable", configuredProvider)
+	}
+	if err = store.InitializeActiveMessageProvider(openCtx, configuredProvider); err != nil {
+		return err
+	}
+	if cfg.DevAuthEnabled {
+		if _, err = store.EnsureDevelopmentAdmin(openCtx); err != nil {
+			return err
+		}
+	}
+	api := transporthandler.NewAPIWithOptions(app, store, tokens, feishuClient, cfg.Feishu.VerificationToken, cfg.Feishu.EncryptKey, cfg.Security.PublicBaseURL, cfg.Security.CookieSecure, registry, cfg.RuntimeEnvironment, cfg.DevAuthEnabled)
 	kube := kubeadapter.NewManager(store, box)
 	router := transporthttp.NewRouter(transporthttp.Dependencies{
 		Readiness: store.Ready, API: api, Tokens: tokens,
 	})
 	if cfg.Mode == "all" || cfg.Mode == "worker" {
-		go worker.New(cfg.Worker.ID, cfg.Worker.PollInterval, store, kube, logger).Run(ctx)
+		go worker.New(cfg.Worker.ID, cfg.Worker.PollInterval, store, kube, registry, logger).Run(ctx)
 	}
 	if cfg.Mode == "worker" {
 		<-ctx.Done()
