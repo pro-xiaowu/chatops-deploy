@@ -122,6 +122,33 @@ func TestLoadRejectsUnknownMessageProvider(t *testing.T) {
 	require.EqualError(t, err, "message provider must be one of web, feishu, wecom, dingtalk")
 }
 
+func TestLoadConfiguresWeComAndDingTalkFromEnvironment(t *testing.T) {
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
+	t.Setenv("CHATOPS_WECOM_CORP_ID", "corp")
+	t.Setenv("CHATOPS_WECOM_AGENT_ID", "1000001")
+	t.Setenv("CHATOPS_WECOM_SECRET", "wecom-secret")
+	t.Setenv("CHATOPS_WECOM_TOKEN", "wecom-token")
+	t.Setenv("CHATOPS_WECOM_ENCODING_AES_KEY", "aes-key")
+	t.Setenv("CHATOPS_WECOM_API_BASE_URL", "https://wecom.example")
+	t.Setenv("CHATOPS_DINGTALK_CLIENT_ID", "client")
+	t.Setenv("CHATOPS_DINGTALK_CLIENT_SECRET", "dingtalk-secret")
+	t.Setenv("CHATOPS_DINGTALK_ROBOT_CODE", "robot")
+	t.Setenv("CHATOPS_DINGTALK_EVENT_TOKEN", "event-token")
+	t.Setenv("CHATOPS_DINGTALK_EVENT_AES_KEY", "event-aes-key")
+	t.Setenv("CHATOPS_DINGTALK_API_BASE_URL", "https://dingtalk.example")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	require.Equal(t, "corp", cfg.WeCom.CorpID)
+	require.Equal(t, "1000001", cfg.WeCom.AgentID)
+	require.Equal(t, "wecom-secret", cfg.WeCom.Secret)
+	require.Equal(t, "aes-key", cfg.WeCom.EncodingAESKey)
+	require.Equal(t, "client", cfg.DingTalk.ClientID)
+	require.Equal(t, "robot", cfg.DingTalk.RobotCode)
+	require.Equal(t, "event-aes-key", cfg.DingTalk.EventAESKey)
+}
+
 func validConfig(databaseURL string) string {
 	return "database:\n  url: " + databaseURL + "\nsecurity:\n  kubeconfig_master_key: test-master-key\n"
 }
@@ -142,6 +169,8 @@ func setConfigFile(t *testing.T, contents string) {
 		"CHATOPS_DEV_AUTH_ENABLED",
 		"CHATOPS_MESSAGE_PROVIDER",
 		"CHATOPS_SECURITY_KUBECONFIG_MASTER_KEY",
+		"CHATOPS_WECOM_CORP_ID", "CHATOPS_WECOM_AGENT_ID", "CHATOPS_WECOM_SECRET", "CHATOPS_WECOM_TOKEN", "CHATOPS_WECOM_ENCODING_AES_KEY", "CHATOPS_WECOM_API_BASE_URL",
+		"CHATOPS_DINGTALK_CLIENT_ID", "CHATOPS_DINGTALK_CLIENT_SECRET", "CHATOPS_DINGTALK_ROBOT_CODE", "CHATOPS_DINGTALK_EVENT_TOKEN", "CHATOPS_DINGTALK_EVENT_AES_KEY", "CHATOPS_DINGTALK_API_BASE_URL",
 	} {
 		t.Setenv(key, "")
 	}

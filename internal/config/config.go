@@ -20,6 +20,8 @@ type Config struct {
 	Log                LogConfig      `mapstructure:"log"`
 	Security           SecurityConfig `mapstructure:"security"`
 	Feishu             FeishuConfig   `mapstructure:"feishu"`
+	WeCom              WeComConfig    `mapstructure:"wecom"`
+	DingTalk           DingTalkConfig `mapstructure:"dingtalk"`
 	Worker             WorkerConfig   `mapstructure:"worker"`
 }
 
@@ -53,6 +55,24 @@ type FeishuConfig struct {
 	EncryptKey        string `mapstructure:"encrypt_key"`
 	APIBaseURL        string `mapstructure:"api_base_url"`
 }
+
+type WeComConfig struct {
+	CorpID         string `mapstructure:"corp_id"`
+	AgentID        string `mapstructure:"agent_id"`
+	Secret         string `mapstructure:"secret"`
+	Token          string `mapstructure:"token"`
+	EncodingAESKey string `mapstructure:"encoding_aes_key"`
+	APIBaseURL     string `mapstructure:"api_base_url"`
+}
+
+type DingTalkConfig struct {
+	ClientID     string `mapstructure:"client_id"`
+	ClientSecret string `mapstructure:"client_secret"`
+	RobotCode    string `mapstructure:"robot_code"`
+	EventToken   string `mapstructure:"event_token"`
+	EventAESKey  string `mapstructure:"event_aes_key"`
+	APIBaseURL   string `mapstructure:"api_base_url"`
+}
 type WorkerConfig struct {
 	ID           string        `mapstructure:"id"`
 	PollInterval time.Duration `mapstructure:"poll_interval"`
@@ -75,6 +95,8 @@ func Load() (Config, error) {
 	v.SetDefault("log.development", false)
 	v.SetDefault("security.cookie_secure", true)
 	v.SetDefault("feishu.api_base_url", "https://open.feishu.cn")
+	v.SetDefault("wecom.api_base_url", "https://qyapi.weixin.qq.com")
+	v.SetDefault("dingtalk.api_base_url", "https://api.dingtalk.com")
 	v.SetDefault("worker.id", "chatops-worker")
 	v.SetDefault("worker.poll_interval", time.Second)
 	v.SetDefault("worker.lease_ttl", 30*time.Second)
@@ -96,6 +118,8 @@ func Load() (Config, error) {
 		"log.development",
 		"security.kubeconfig_master_key", "security.bootstrap_admin_token", "security.public_base_url", "security.cookie_secure",
 		"feishu.app_id", "feishu.app_secret", "feishu.verification_token", "feishu.encrypt_key", "feishu.api_base_url",
+		"wecom.corp_id", "wecom.agent_id", "wecom.secret", "wecom.token", "wecom.encoding_aes_key", "wecom.api_base_url",
+		"dingtalk.client_id", "dingtalk.client_secret", "dingtalk.robot_code", "dingtalk.event_token", "dingtalk.event_aes_key", "dingtalk.api_base_url",
 		"worker.id", "worker.poll_interval", "worker.lease_ttl", "worker.max_attempts",
 	} {
 		if err := v.BindEnv(key); err != nil {

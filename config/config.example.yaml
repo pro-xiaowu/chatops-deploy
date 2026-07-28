@@ -29,3 +29,9 @@ worker:
 
 feishu:
   api_base_url: "https://open.feishu.cn"
+
+wecom:
+  api_base_url: "https://qyapi.weixin.qq.com"
+
+dingtalk:
+  api_base_url: "https://api.dingtalk.com"
