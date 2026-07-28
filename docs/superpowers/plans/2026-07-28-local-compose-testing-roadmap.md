@@ -10,6 +10,7 @@
 
 ## Global Constraints
 
+- The supported runtime is Linux; Compose, shell scripts, and CI verification target Linux only.
 - `CHATOPS_RUNTIME_ENV` accepts only `production` or `development`, defaulting to `production`.
 - `CHATOPS_DEV_AUTH_ENABLED=true` is valid only with `CHATOPS_RUNTIME_ENV=development`.
 - `CHATOPS_MESSAGE_PROVIDER` accepts only `web`, `feishu`, `wecom`, or `dingtalk`, defaulting to `web` for local Compose.

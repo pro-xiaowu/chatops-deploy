@@ -10,6 +10,7 @@
 
 ## Global Constraints
 
+- Local Compose and verification commands target Linux and use a POSIX shell.
 - Use the real Session cookie and CSRF flow for development login; never add a hard-coded API token to frontend code.
 - Web-only Compose must work with no Feishu, WeCom, or DingTalk credentials.
 - Browser smoke tests capture desktop and mobile screenshots and assert the main content is visible without layout overlap.
@@ -300,7 +301,7 @@ Expected: FAIL until Compose, login, provider selection, reset, and secret instr
 
 - [ ] **Step 3: Add operator documentation**
 
-Document Bash and PowerShell startup, status, logs, local login, stop, destructive volume reset, provider modes, required secret groups, browser-auth separation, and GitHub branch flow. Keep existing README content and review its CRLF diff separately.
+Document Linux shell startup, status, logs, local login, stop, destructive volume reset, provider modes, required secret groups, browser-auth separation, and GitHub branch flow. State clearly that Windows is outside the supported runtime scope. Keep existing README content and review its CRLF diff separately.
 
 - [ ] **Step 4: Run the complete verification matrix**
 

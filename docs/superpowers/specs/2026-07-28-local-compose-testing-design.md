@@ -8,6 +8,8 @@ Date: 2026-07-28
 
 This change makes the existing modular monolith runnable locally with Docker Compose, adds an explicitly development-only login path, lets an administrator choose Feishu, WeCom, DingTalk, or Web-only message delivery, expands automated coverage around critical behavior, and publishes the result to a GitHub feature branch.
 
+The supported local runtime is Linux. Docker Compose, shell scripts, and CI verification are written for a Linux environment.
+
 ## 2. Goals
 
 - Start PostgreSQL and the complete application with `docker compose up --build -d`.
@@ -19,6 +21,7 @@ This change makes the existing modular monolith runnable locally with Docker Com
 - Add meaningful backend, frontend, PostgreSQL, Kubernetes fake-client, Feishu, HTTP, and Compose smoke tests.
 - Run the expanded test suite in GitHub Actions without real Feishu or Kubernetes credentials.
 - Push reviewed commits to `origin/feature/local-compose-and-tests` without changing or force-pushing `origin/main`.
+- Document Linux as the supported runtime for local deployment and verification.
 
 ## 3. Non-Goals
 
@@ -30,6 +33,7 @@ This change makes the existing modular monolith runnable locally with Docker Com
 - Broadcasting the same command or notification through multiple active message platforms at once.
 - Creating, merging, or force-updating a GitHub Pull Request without separate authorization.
 - Publishing `chatops-deploy-conversation-export.md`; it remains local migration context.
+- Supporting Windows as a native runtime or providing PowerShell-specific deployment instructions.
 
 ## 4. Chosen Approach
 
@@ -224,7 +228,7 @@ The backend and frontend jobs produce coverage reports as artifacts. This change
 
 ## 12. Documentation and Repository Hygiene
 
-Update the local-running documentation with Linux/macOS and PowerShell commands for startup, status, logs, login, stop, and explicit volume reset. Document the local URL and the fact that default Compose credentials are development-only.
+Update the local-running documentation with Linux shell commands for startup, status, logs, login, stop, and explicit volume reset. Document the local URL and the fact that default Compose credentials are development-only.
 
 Document the four message-platform modes, required secret groups, the difference between browser authentication and message delivery, provider health status, safe switching behavior, and Web-only local operation. Documentation must not include real provider secrets.
 
@@ -254,3 +258,4 @@ After pushing, verify the remote branch commit. Provide the GitHub compare or Pu
 10. GitHub Actions executes the expanded backend, frontend, integration, image, and smoke checks.
 11. No real secret or conversation export is committed.
 12. The completed commits are pushed to `origin/feature/local-compose-and-tests` without modifying `origin/main`.
+13. Local deployment and CI instructions clearly require Linux; Windows is outside the supported runtime scope.
