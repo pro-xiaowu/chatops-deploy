@@ -1,4 +1,5 @@
 .tools/
+.worktrees/
 server.exe
 .env
 web/node_modules/
