@@ -1,4 +1,7 @@
 mode: all
+runtime_environment: production
+dev_auth_enabled: false
+message_provider: web
 
 http:
   addr: ":8080"

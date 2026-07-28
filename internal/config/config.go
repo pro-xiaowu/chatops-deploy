@@ -11,13 +11,16 @@ import (
 )
 
 type Config struct {
-	Mode     string         `mapstructure:"mode"`
-	HTTP     HTTPConfig     `mapstructure:"http"`
-	Database DatabaseConfig `mapstructure:"database"`
-	Log      LogConfig      `mapstructure:"log"`
-	Security SecurityConfig `mapstructure:"security"`
-	Feishu   FeishuConfig   `mapstructure:"feishu"`
-	Worker   WorkerConfig   `mapstructure:"worker"`
+	Mode               string         `mapstructure:"mode"`
+	RuntimeEnvironment string         `mapstructure:"runtime_environment"`
+	DevAuthEnabled     bool           `mapstructure:"dev_auth_enabled"`
+	MessageProvider    string         `mapstructure:"message_provider"`
+	HTTP               HTTPConfig     `mapstructure:"http"`
+	Database           DatabaseConfig `mapstructure:"database"`
+	Log                LogConfig      `mapstructure:"log"`
+	Security           SecurityConfig `mapstructure:"security"`
+	Feishu             FeishuConfig   `mapstructure:"feishu"`
+	Worker             WorkerConfig   `mapstructure:"worker"`
 }
 
 type HTTPConfig struct {
@@ -60,6 +63,9 @@ type WorkerConfig struct {
 func Load() (Config, error) {
 	v := viper.New()
 	v.SetDefault("mode", "all")
+	v.SetDefault("runtime_environment", "production")
+	v.SetDefault("dev_auth_enabled", false)
+	v.SetDefault("message_provider", "web")
 	v.SetDefault("http.addr", ":8080")
 	v.SetDefault("http.shutdown_timeout", 15*time.Second)
 	v.SetDefault("database.max_open_conns", 20)
@@ -79,6 +85,7 @@ func Load() (Config, error) {
 	v.AutomaticEnv()
 	for _, key := range []string{
 		"mode",
+		"dev_auth_enabled", "message_provider",
 		"http.addr",
 		"http.shutdown_timeout",
 		"database.url",
@@ -94,6 +101,9 @@ func Load() (Config, error) {
 		if err := v.BindEnv(key); err != nil {
 			return Config{}, fmt.Errorf("bind environment variable %s: %w", key, err)
 		}
+	}
+	if err := v.BindEnv("runtime_environment", "CHATOPS_RUNTIME_ENV"); err != nil {
+		return Config{}, fmt.Errorf("bind environment variable CHATOPS_RUNTIME_ENV: %w", err)
 	}
 
 	if path := strings.TrimSpace(os.Getenv("CHATOPS_CONFIG")); path != "" {
@@ -128,6 +138,19 @@ func Load() (Config, error) {
 	case "all", "api", "worker":
 	default:
 		return Config{}, errors.New("mode must be one of all, api, worker")
+	}
+	switch cfg.RuntimeEnvironment {
+	case "production", "development":
+	default:
+		return Config{}, errors.New("runtime environment must be one of production, development")
+	}
+	if cfg.DevAuthEnabled && cfg.RuntimeEnvironment != "development" {
+		return Config{}, errors.New("development auth requires runtime environment development")
+	}
+	switch cfg.MessageProvider {
+	case "web", "feishu", "wecom", "dingtalk":
+	default:
+		return Config{}, errors.New("message provider must be one of web, feishu, wecom, dingtalk")
 	}
 
 	return cfg, nil

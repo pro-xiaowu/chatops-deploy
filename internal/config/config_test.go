@@ -11,7 +11,7 @@ import (
 )
 
 func TestLoadUsesDefaults(t *testing.T) {
-	setConfigFile(t, "database:\n  url: postgres://localhost/chatops\n")
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
 
 	cfg, err := config.Load()
 
@@ -28,7 +28,7 @@ func TestLoadUsesDefaults(t *testing.T) {
 }
 
 func TestLoadOverridesEveryFieldFromEnvironment(t *testing.T) {
-	setConfigFile(t, "database:\n  url: postgres://file/chatops\n")
+	setConfigFile(t, validConfig("postgres://file/chatops"))
 	t.Setenv("CHATOPS_MODE", "worker")
 	t.Setenv("CHATOPS_HTTP_ADDR", ":9090")
 	t.Setenv("CHATOPS_HTTP_SHUTDOWN_TIMEOUT", "25s")
@@ -54,7 +54,7 @@ func TestLoadOverridesEveryFieldFromEnvironment(t *testing.T) {
 }
 
 func TestLoadRequiresDatabaseURL(t *testing.T) {
-	setConfigFile(t, "mode: all\n")
+	setConfigFile(t, "mode: all\nsecurity:\n  kubeconfig_master_key: test-master-key\n")
 
 	_, err := config.Load()
 
@@ -62,11 +62,68 @@ func TestLoadRequiresDatabaseURL(t *testing.T) {
 }
 
 func TestLoadRejectsInvalidMode(t *testing.T) {
-	setConfigFile(t, "mode: invalid\ndatabase:\n  url: postgres://localhost/chatops\n")
+	setConfigFile(t, "mode: invalid\ndatabase:\n  url: postgres://localhost/chatops\nsecurity:\n  kubeconfig_master_key: test-master-key\n")
 
 	_, err := config.Load()
 
 	require.EqualError(t, err, "mode must be one of all, api, worker")
+}
+
+func TestLoadDefaultsToProductionAndWebProvider(t *testing.T) {
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	require.Equal(t, "production", cfg.RuntimeEnvironment)
+	require.False(t, cfg.DevAuthEnabled)
+	require.Equal(t, "web", cfg.MessageProvider)
+}
+
+func TestLoadOverridesRuntimeAndProviderFromEnvironment(t *testing.T) {
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
+	t.Setenv("CHATOPS_RUNTIME_ENV", "development")
+	t.Setenv("CHATOPS_DEV_AUTH_ENABLED", "true")
+	t.Setenv("CHATOPS_MESSAGE_PROVIDER", "wecom")
+
+	cfg, err := config.Load()
+
+	require.NoError(t, err)
+	require.Equal(t, "development", cfg.RuntimeEnvironment)
+	require.True(t, cfg.DevAuthEnabled)
+	require.Equal(t, "wecom", cfg.MessageProvider)
+}
+
+func TestLoadRejectsDevelopmentAuthInProduction(t *testing.T) {
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
+	t.Setenv("CHATOPS_RUNTIME_ENV", "production")
+	t.Setenv("CHATOPS_DEV_AUTH_ENABLED", "true")
+
+	_, err := config.Load()
+
+	require.EqualError(t, err, "development auth requires runtime environment development")
+}
+
+func TestLoadRejectsUnknownRuntimeEnvironment(t *testing.T) {
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
+	t.Setenv("CHATOPS_RUNTIME_ENV", "staging")
+
+	_, err := config.Load()
+
+	require.EqualError(t, err, "runtime environment must be one of production, development")
+}
+
+func TestLoadRejectsUnknownMessageProvider(t *testing.T) {
+	setConfigFile(t, validConfig("postgres://localhost/chatops"))
+	t.Setenv("CHATOPS_MESSAGE_PROVIDER", "telegram")
+
+	_, err := config.Load()
+
+	require.EqualError(t, err, "message provider must be one of web, feishu, wecom, dingtalk")
+}
+
+func validConfig(databaseURL string) string {
+	return "database:\n  url: " + databaseURL + "\nsecurity:\n  kubeconfig_master_key: test-master-key\n"
 }
 
 func setConfigFile(t *testing.T, contents string) {
@@ -81,6 +138,10 @@ func setConfigFile(t *testing.T, contents string) {
 		"CHATOPS_DATABASE_CONN_MAX_LIFETIME",
 		"CHATOPS_LOG_LEVEL",
 		"CHATOPS_LOG_DEVELOPMENT",
+		"CHATOPS_RUNTIME_ENV",
+		"CHATOPS_DEV_AUTH_ENABLED",
+		"CHATOPS_MESSAGE_PROVIDER",
+		"CHATOPS_SECURITY_KUBECONFIG_MASTER_KEY",
 	} {
 		t.Setenv(key, "")
 	}

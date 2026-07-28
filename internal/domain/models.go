@@ -16,6 +16,38 @@ var (
 	ErrSelfApproval = errors.New("requester cannot approve own operation")
 )
 
+type MessageProvider string
+
+const (
+	MessageProviderWeb      MessageProvider = "web"
+	MessageProviderFeishu   MessageProvider = "feishu"
+	MessageProviderWeCom    MessageProvider = "wecom"
+	MessageProviderDingTalk MessageProvider = "dingtalk"
+)
+
+func ValidateMessageProvider(provider MessageProvider) error {
+	switch provider {
+	case MessageProviderWeb, MessageProviderFeishu, MessageProviderWeCom, MessageProviderDingTalk:
+		return nil
+	default:
+		return errors.New("message provider must be one of web, feishu, wecom, dingtalk")
+	}
+}
+
+type ExternalIdentity struct {
+	ID          uuid.UUID       `json:"id"`
+	UserID      uuid.UUID       `json:"user_id"`
+	Provider    MessageProvider `json:"provider"`
+	SubjectID   string          `json:"subject_id"`
+	DisplayName string          `json:"display_name,omitempty"`
+}
+
+type MessageOrigin struct {
+	Provider       MessageProvider `json:"message_provider"`
+	ConversationID string          `json:"conversation_id,omitempty"`
+	EventID        string          `json:"event_id,omitempty"`
+}
+
 type Action string
 
 const (
@@ -130,19 +162,22 @@ var legalTransitions = map[OperationStatus]map[OperationStatus]bool{
 func (s OperationStatus) CanTransitionTo(next OperationStatus) bool { return legalTransitions[s][next] }
 
 type Operation struct {
-	ID             uuid.UUID       `json:"id"`
-	Kind           OperationKind   `json:"kind"`
-	Status         OperationStatus `json:"status"`
-	ApplicationID  uuid.UUID       `json:"application_id"`
-	EnvironmentID  uuid.UUID       `json:"environment_id"`
-	RequesterID    uuid.UUID       `json:"requester_id"`
-	Image          string          `json:"image,omitempty"`
-	Revision       int64           `json:"revision,omitempty"`
-	IdempotencyKey string          `json:"idempotency_key"`
-	ErrorCode      string          `json:"error_code,omitempty"`
-	ErrorMessage   string          `json:"error_message,omitempty"`
-	CreatedAt      time.Time       `json:"created_at"`
-	UpdatedAt      time.Time       `json:"updated_at"`
+	ID              uuid.UUID       `json:"id"`
+	Kind            OperationKind   `json:"kind"`
+	Status          OperationStatus `json:"status"`
+	ApplicationID   uuid.UUID       `json:"application_id"`
+	EnvironmentID   uuid.UUID       `json:"environment_id"`
+	RequesterID     uuid.UUID       `json:"requester_id"`
+	Image           string          `json:"image,omitempty"`
+	Revision        int64           `json:"revision,omitempty"`
+	IdempotencyKey  string          `json:"idempotency_key"`
+	MessageProvider MessageProvider `json:"message_provider"`
+	ConversationID  string          `json:"conversation_id,omitempty"`
+	EventID         string          `json:"event_id,omitempty"`
+	ErrorCode       string          `json:"error_code,omitempty"`
+	ErrorMessage    string          `json:"error_message,omitempty"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
 }
 
 type Approval struct {

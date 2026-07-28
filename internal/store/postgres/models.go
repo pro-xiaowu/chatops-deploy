@@ -51,7 +51,7 @@ func (EnvironmentModel) TableName() string { return "app_environments" }
 
 type UserModel struct {
 	ID           uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	FeishuOpenID string
+	FeishuOpenID *string
 	DisplayName  string
 	Enabled      bool
 	CreatedAt    time.Time
@@ -59,6 +59,26 @@ type UserModel struct {
 }
 
 func (UserModel) TableName() string { return "users" }
+
+type ExternalIdentityModel struct {
+	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	UserID      uuid.UUID
+	Provider    string
+	SubjectID   string
+	DisplayName string
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+}
+
+func (ExternalIdentityModel) TableName() string { return "user_external_identities" }
+
+type SystemSettingModel struct {
+	Key       string `gorm:"primaryKey"`
+	Value     string
+	UpdatedAt time.Time
+}
+
+func (SystemSettingModel) TableName() string { return "system_settings" }
 
 type RoleModel struct {
 	ID          uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
@@ -114,23 +134,26 @@ type OAuthStateModel struct {
 func (OAuthStateModel) TableName() string { return "oauth_states" }
 
 type OperationModel struct {
-	ID             uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
-	Kind           string
-	Status         string
-	ApplicationID  uuid.UUID
-	EnvironmentID  uuid.UUID
-	RequesterID    uuid.UUID
-	Image          string
-	Revision       int64
-	IdempotencyKey string
-	ErrorCode      string
-	ErrorMessage   string
-	Attempts       int
-	NextAttemptAt  time.Time
-	ClaimedBy      *string
-	ClaimedAt      *time.Time
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                    uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
+	Kind                  string
+	Status                string
+	ApplicationID         uuid.UUID
+	EnvironmentID         uuid.UUID
+	RequesterID           uuid.UUID
+	Image                 string
+	Revision              int64
+	IdempotencyKey        string
+	MessageProvider       string
+	MessageConversationID string
+	MessageEventID        string
+	ErrorCode             string
+	ErrorMessage          string
+	Attempts              int
+	NextAttemptAt         time.Time
+	ClaimedBy             *string
+	ClaimedAt             *time.Time
+	CreatedAt             time.Time
+	UpdatedAt             time.Time
 }
 
 func (OperationModel) TableName() string { return "operations" }
@@ -149,6 +172,7 @@ func (ApprovalModel) TableName() string { return "approvals" }
 type OutboxModel struct {
 	ID            uuid.UUID `gorm:"type:uuid;primaryKey;default:gen_random_uuid()"`
 	Topic         string
+	Provider      string
 	Destination   string
 	Payload       datatypes.JSON
 	Attempts      int

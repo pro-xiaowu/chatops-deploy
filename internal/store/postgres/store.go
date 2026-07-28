@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"time"
 
 	"chatops-deploy/internal/domain"
@@ -106,12 +107,16 @@ func (s *Store) ListUsers(ctx context.Context) ([]domain.User, error) {
 	err := s.DB.WithContext(ctx).Order("display_name").Find(&rows).Error
 	out := make([]domain.User, 0, len(rows))
 	for _, r := range rows {
-		out = append(out, domain.User{ID: r.ID, FeishuOpenID: r.FeishuOpenID, DisplayName: r.DisplayName, Enabled: r.Enabled, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
+		out = append(out, domain.User{ID: r.ID, FeishuOpenID: optionalString(r.FeishuOpenID), DisplayName: r.DisplayName, Enabled: r.Enabled, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt})
 	}
 	return out, err
 }
 func (s *Store) CreateUser(ctx context.Context, u domain.User) (domain.User, error) {
-	r := UserModel{FeishuOpenID: u.FeishuOpenID, DisplayName: u.DisplayName, Enabled: true}
+	var feishuOpenID *string
+	if value := strings.TrimSpace(u.FeishuOpenID); value != "" {
+		feishuOpenID = &value
+	}
+	r := UserModel{FeishuOpenID: feishuOpenID, DisplayName: u.DisplayName, Enabled: true}
 	if err := s.DB.WithContext(ctx).Create(&r).Error; err != nil {
 		return u, mapError(err)
 	}
@@ -157,11 +162,151 @@ func (s *Store) ListPermissions(ctx context.Context, roleID uuid.UUID) ([]domain
 	return out, err
 }
 func (s *Store) FindUserByOpenID(ctx context.Context, openID string) (domain.User, error) {
+	if user, err := s.FindUserByIdentity(ctx, domain.MessageProviderFeishu, openID); err == nil {
+		return user, nil
+	} else if !errors.Is(err, domain.ErrNotFound) {
+		return domain.User{}, err
+	}
 	var r UserModel
 	if err := s.DB.WithContext(ctx).Where("feishu_open_id = ? AND enabled", openID).First(&r).Error; err != nil {
 		return domain.User{}, mapError(err)
 	}
-	return domain.User{ID: r.ID, FeishuOpenID: r.FeishuOpenID, DisplayName: r.DisplayName, Enabled: r.Enabled}, nil
+	return domain.User{ID: r.ID, FeishuOpenID: optionalString(r.FeishuOpenID), DisplayName: r.DisplayName, Enabled: r.Enabled}, nil
+}
+
+func (s *Store) FindUserByIdentity(ctx context.Context, provider domain.MessageProvider, subject string) (domain.User, error) {
+	if err := domain.ValidateMessageProvider(provider); err != nil {
+		return domain.User{}, err
+	}
+	var user UserModel
+	err := s.DB.WithContext(ctx).
+		Table("users AS u").
+		Select("u.*").
+		Joins("JOIN user_external_identities AS i ON i.user_id = u.id").
+		Where("i.provider = ? AND i.subject_id = ? AND u.enabled", provider, strings.TrimSpace(subject)).
+		First(&user).Error
+	if err != nil {
+		return domain.User{}, mapError(err)
+	}
+	return userDomain(user), nil
+}
+
+func (s *Store) UpsertExternalIdentity(ctx context.Context, identity domain.ExternalIdentity) error {
+	if err := domain.ValidateMessageProvider(identity.Provider); err != nil {
+		return err
+	}
+	if identity.UserID == uuid.Nil || strings.TrimSpace(identity.SubjectID) == "" {
+		return errors.New("external identity requires user and subject")
+	}
+	row := ExternalIdentityModel{UserID: identity.UserID, Provider: string(identity.Provider), SubjectID: strings.TrimSpace(identity.SubjectID), DisplayName: strings.TrimSpace(identity.DisplayName)}
+	return s.DB.WithContext(ctx).Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "user_id"}, {Name: "provider"}},
+		DoUpdates: clause.Assignments(map[string]any{"subject_id": row.SubjectID, "display_name": row.DisplayName, "updated_at": time.Now()}),
+	}).Create(&row).Error
+}
+
+func (s *Store) ListMessageProviderIdentities(ctx context.Context, userID uuid.UUID) ([]domain.ExternalIdentity, error) {
+	var rows []ExternalIdentityModel
+	err := s.DB.WithContext(ctx).Where("user_id = ?", userID).Order("provider").Find(&rows).Error
+	out := make([]domain.ExternalIdentity, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, domain.ExternalIdentity{ID: row.ID, UserID: row.UserID, Provider: domain.MessageProvider(row.Provider), SubjectID: row.SubjectID, DisplayName: row.DisplayName})
+	}
+	return out, err
+}
+
+func (s *Store) EnsureDevelopmentAdmin(ctx context.Context) (domain.User, error) {
+	const subject = "local-development-admin"
+	var user domain.User
+	err := s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", subject).Error; err != nil {
+			return err
+		}
+		store := New(tx)
+		existing, err := store.FindUserByIdentity(ctx, domain.MessageProviderWeb, subject)
+		if err == nil {
+			user = existing
+		} else if !errors.Is(err, domain.ErrNotFound) {
+			return err
+		} else {
+			row := UserModel{DisplayName: "Local Development Administrator", Enabled: true}
+			if err := tx.Create(&row).Error; err != nil {
+				return mapError(err)
+			}
+			identity := ExternalIdentityModel{UserID: row.ID, Provider: string(domain.MessageProviderWeb), SubjectID: subject, DisplayName: row.DisplayName}
+			if err := tx.Create(&identity).Error; err != nil {
+				return mapError(err)
+			}
+			user = userDomain(row)
+		}
+		var role RoleModel
+		if err := tx.Where("name = ?", "admin").First(&role).Error; err != nil {
+			return mapError(err)
+		}
+		return tx.Exec("INSERT INTO user_roles(user_id, role_id) VALUES (?, ?) ON CONFLICT DO NOTHING", user.ID, role.ID).Error
+	})
+	return user, err
+}
+
+func (s *Store) GetActiveMessageProvider(ctx context.Context) (domain.MessageProvider, error) {
+	var setting SystemSettingModel
+	if err := s.DB.WithContext(ctx).First(&setting, "key = ?", "active_message_provider").Error; err != nil {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			return domain.MessageProviderWeb, nil
+		}
+		return "", err
+	}
+	provider := domain.MessageProvider(setting.Value)
+	if err := domain.ValidateMessageProvider(provider); err != nil {
+		return "", err
+	}
+	return provider, nil
+}
+
+func (s *Store) HasUnfinishedMessageOperations(ctx context.Context, provider domain.MessageProvider) (bool, error) {
+	if err := domain.ValidateMessageProvider(provider); err != nil {
+		return false, err
+	}
+	var count int64
+	err := s.DB.WithContext(ctx).Model(&OperationModel{}).
+		Where("message_provider = ? AND message_conversation_id <> '' AND status IN ?", provider, []string{string(domain.StatusPendingApproval), string(domain.StatusApproved), string(domain.StatusQueued), string(domain.StatusRunning)}).
+		Count(&count).Error
+	return count > 0, err
+}
+
+func (s *Store) SetActiveMessageProvider(ctx context.Context, provider domain.MessageProvider) error {
+	if err := domain.ValidateMessageProvider(provider); err != nil {
+		return err
+	}
+	return s.DB.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		store := New(tx)
+		current, err := store.GetActiveMessageProvider(ctx)
+		if err != nil {
+			return err
+		}
+		if current == provider {
+			return nil
+		}
+		unfinished, err := store.HasUnfinishedMessageOperations(ctx, current)
+		if err != nil {
+			return err
+		}
+		if unfinished {
+			return domain.ErrConflict
+		}
+		return tx.Exec("INSERT INTO system_settings(key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = now()", "active_message_provider", provider).Error
+	})
+}
+
+func userDomain(row UserModel) domain.User {
+	return domain.User{ID: row.ID, FeishuOpenID: optionalString(row.FeishuOpenID), DisplayName: row.DisplayName, Enabled: row.Enabled, CreatedAt: row.CreatedAt, UpdatedAt: row.UpdatedAt}
+}
+
+func optionalString(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 func (s *Store) PrincipalForUser(ctx context.Context, userID uuid.UUID) (domain.Principal, error) {
@@ -184,7 +329,11 @@ func (s *Store) PrincipalForUser(ctx context.Context, userID uuid.UUID) (domain.
 }
 
 func (s *Store) CreateOperation(ctx context.Context, o domain.Operation) (domain.Operation, error) {
-	r := OperationModel{Kind: string(o.Kind), Status: string(o.Status), ApplicationID: o.ApplicationID, EnvironmentID: o.EnvironmentID, RequesterID: o.RequesterID, Image: o.Image, Revision: o.Revision, IdempotencyKey: o.IdempotencyKey}
+	provider := o.MessageProvider
+	if provider == "" {
+		provider = domain.MessageProviderWeb
+	}
+	r := OperationModel{Kind: string(o.Kind), Status: string(o.Status), ApplicationID: o.ApplicationID, EnvironmentID: o.EnvironmentID, RequesterID: o.RequesterID, Image: o.Image, Revision: o.Revision, IdempotencyKey: o.IdempotencyKey, MessageProvider: string(provider), MessageConversationID: o.ConversationID, MessageEventID: o.EventID}
 	if err := s.DB.WithContext(ctx).Create(&r).Error; err != nil {
 		return o, mapError(err)
 	}
@@ -214,7 +363,11 @@ func (s *Store) ListOperations(ctx context.Context, limit int) ([]domain.Operati
 	return out, err
 }
 func operationDomain(r OperationModel) domain.Operation {
-	return domain.Operation{ID: r.ID, Kind: domain.OperationKind(r.Kind), Status: domain.OperationStatus(r.Status), ApplicationID: r.ApplicationID, EnvironmentID: r.EnvironmentID, RequesterID: r.RequesterID, Image: r.Image, Revision: r.Revision, IdempotencyKey: r.IdempotencyKey, ErrorCode: r.ErrorCode, ErrorMessage: r.ErrorMessage, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
+	provider := domain.MessageProvider(r.MessageProvider)
+	if provider == "" {
+		provider = domain.MessageProviderWeb
+	}
+	return domain.Operation{ID: r.ID, Kind: domain.OperationKind(r.Kind), Status: domain.OperationStatus(r.Status), ApplicationID: r.ApplicationID, EnvironmentID: r.EnvironmentID, RequesterID: r.RequesterID, Image: r.Image, Revision: r.Revision, IdempotencyKey: r.IdempotencyKey, MessageProvider: provider, ConversationID: r.MessageConversationID, EventID: r.MessageEventID, ErrorCode: r.ErrorCode, ErrorMessage: r.ErrorMessage, CreatedAt: r.CreatedAt, UpdatedAt: r.UpdatedAt}
 }
 func (s *Store) TransitionOperation(ctx context.Context, id uuid.UUID, from, to domain.OperationStatus, code, message string) error {
 	if !from.CanTransitionTo(to) {
