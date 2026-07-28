@@ -28,6 +28,20 @@ func TestMigrationCreatesProviderSettingsAndExternalIdentities(t *testing.T) {
 	require.NoError(t, db.Exec("SELECT message_provider, message_conversation_id, message_event_id FROM operations LIMIT 1").Error)
 }
 
+func TestConcurrentMigrationsAreSerializedAcrossSchemas(t *testing.T) {
+	first := integrationDB(t)
+	second := integrationDB(t)
+	errors := make(chan error, 2)
+
+	go func() { errors <- Migrate(context.Background(), first) }()
+	go func() { errors <- Migrate(context.Background(), second) }()
+
+	require.NoError(t, <-errors)
+	require.NoError(t, <-errors)
+	require.True(t, first.Migrator().HasTable("operations"))
+	require.True(t, second.Migrator().HasTable("operations"))
+}
+
 func integrationDB(t *testing.T) *gorm.DB {
 	t.Helper()
 	rawURL := os.Getenv("CHATOPS_TEST_DATABASE_URL")

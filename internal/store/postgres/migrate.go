@@ -12,6 +12,15 @@ import (
 )
 
 func Migrate(ctx context.Context, db *gorm.DB) error {
+	return db.WithContext(ctx).Transaction(func(tx *gorm.DB) error {
+		if err := tx.Exec("SELECT pg_advisory_xact_lock(hashtext(?))", "chatops-deploy-schema-migrations").Error; err != nil {
+			return err
+		}
+		return migrate(ctx, tx)
+	})
+}
+
+func migrate(ctx context.Context, db *gorm.DB) error {
 	if err := db.WithContext(ctx).Exec("CREATE TABLE IF NOT EXISTS schema_migrations (version text PRIMARY KEY, applied_at timestamptz NOT NULL DEFAULT now())").Error; err != nil {
 		return err
 	}
