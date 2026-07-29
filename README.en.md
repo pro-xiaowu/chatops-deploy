@@ -42,6 +42,17 @@ docker compose down --volumes
 
 `/healthz` reports process liveness. `/readyz` reports database connectivity and completed migrations. See the [Linux local development guide](docs/local-development.md) for complete configuration details.
 
+## Configure a Release Target
+
+ChatOps manages existing Kubernetes Deployments. It does not create your application or Kubernetes workload. Configure a release target in this order:
+
+1. Register a Kubernetes cluster under Infrastructure with an API Server and kubeconfig reachable from the ChatOps service.
+2. Add the business application in Application Directory.
+3. Open Manage Environments for that application, add a `development`, `test`, or `production` environment, and bind its cluster, namespace, Deployment, container, and allowed image prefix.
+4. Select the target environment in Release Center, enter the new image, and submit a deployment or rollback.
+
+A `production` environment always requires approval from another authorized user. Approval remains configurable when creating development and test environments.
+
 ## Message Providers
 
 An administrator can select one configured provider after its health check succeeds. Changing the messaging provider does not change browser authentication. Existing operations always send results through the provider recorded when the operation was created.

@@ -42,6 +42,17 @@ docker compose down --volumes
 
 `/healthz` 表示进程存活，`/readyz` 表示数据库连接和迁移均已就绪。更完整的配置说明见 [Linux 本地开发文档](docs/local-development.md)。
 
+## 配置发布目标
+
+ChatOps 管理已经存在的 Kubernetes Deployment，不会创建业务应用或 Kubernetes 工作负载。首次使用时按以下顺序配置：
+
+1. 在“基础设施”中注册 Kubernetes 集群，填写可从 ChatOps 服务访问的 API Server 和 kubeconfig。
+2. 在“应用目录”中添加业务应用。
+3. 在该应用的“管理环境”中添加 `development`、`test` 或 `production` 环境，并绑定集群、Namespace、Deployment、Container 和允许的镜像前缀。
+4. 在“发布中心”选择目标环境并填写新镜像，提交部署或回滚操作。
+
+`production` 环境始终需要另一名授权用户审批。开发和测试环境可以在创建环境时决定是否启用审批。
+
 ## 消息平台
 
 管理员可以在“系统设置”中选择一个已配置且健康检查通过的平台。切换平台不会改变浏览器登录方式；历史操作始终使用创建该操作时记录的来源平台发送结果。
