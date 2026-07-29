@@ -5,9 +5,17 @@ import type {ReactElement} from 'react'
 import {MemoryRouter} from 'react-router-dom'
 
 export function renderConsole(ui:ReactElement):RenderResult {
-  const client=new QueryClient({
+  const client=createTestQueryClient()
+  return renderConsoleWithClient(ui,client)
+}
+
+export function createTestQueryClient():QueryClient {
+  return new QueryClient({
     defaultOptions:{queries:{retry:false},mutations:{retry:false}},
   })
+}
+
+export function renderConsoleWithClient(ui:ReactElement,client:QueryClient):RenderResult {
   return render(
     <AntdApp>
       <QueryClientProvider client={client}>

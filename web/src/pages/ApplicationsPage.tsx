@@ -1,7 +1,7 @@
 import {useState} from 'react'
 import {useMutation,useQuery,useQueryClient} from '@tanstack/react-query'
 import {Alert,App as AntdApp,Button,Drawer,Form,Input,InputNumber,Modal,Select,Switch,Table,Tag} from 'antd'
-import {PlusOutlined} from '@ant-design/icons'
+import {PlusOutlined,ReloadOutlined} from '@ant-design/icons'
 import {api} from '../api'
 import PageHeader from '../components/PageHeader'
 import type {Application} from '../types'
@@ -42,12 +42,17 @@ export default function ApplicationsPage(){
       setEnvironmentModalOpen(false)
       environmentForm.resetFields()
       client.invalidateQueries({queryKey:['environments',selectedApplication?.id]})
+      client.invalidateQueries({queryKey:['envs']})
     },
     onError:error=>message.error(error instanceof Error?error.message:'创建环境失败'),
   })
 
   const clusterName=(clusterID:string)=>
     clusters.data?.find(cluster=>cluster.id===clusterID)?.name||clusterID
+  const closeEnvironmentModal=()=>{
+    setEnvironmentModalOpen(false)
+    environmentForm.resetFields()
+  }
 
   return <>
     <PageHeader
@@ -114,7 +119,7 @@ export default function ApplicationsPage(){
       width="min(920px, 100vw)"
       open={Boolean(selectedApplication)}
       onClose={()=>{
-        setEnvironmentModalOpen(false)
+        closeEnvironmentModal()
         setSelectedApplication(null)
       }}
       extra={
@@ -128,7 +133,35 @@ export default function ApplicationsPage(){
         </Button>
       }
     >
-      {!clusters.isLoading&&clusters.data?.length===0&&
+      {clusters.isError&&
+        <Alert
+          type="error"
+          showIcon
+          message="集群加载失败"
+          description={clusters.error instanceof Error?clusters.error.message:'无法读取集群'}
+          action={
+            <Button size="small" icon={<ReloadOutlined/>} onClick={()=>clusters.refetch()}>
+              重试集群
+            </Button>
+          }
+          style={{marginBottom:16}}
+        />
+      }
+      {environments.isError&&
+        <Alert
+          type="error"
+          showIcon
+          message="环境加载失败"
+          description={environments.error instanceof Error?environments.error.message:'无法读取环境'}
+          action={
+            <Button size="small" icon={<ReloadOutlined/>} onClick={()=>environments.refetch()}>
+              重试环境
+            </Button>
+          }
+          style={{marginBottom:16}}
+        />
+      }
+      {!clusters.isLoading&&!clusters.isError&&clusters.data?.length===0&&
         <Alert
           type="warning"
           showIcon
@@ -171,7 +204,7 @@ export default function ApplicationsPage(){
     <Modal
       title={selectedApplication?'为 '+selectedApplication.name+' 添加环境':'添加环境'}
       open={environmentModalOpen}
-      onCancel={()=>setEnvironmentModalOpen(false)}
+      onCancel={closeEnvironmentModal}
       onOk={()=>environmentForm.submit()}
       okText="创建环境"
       confirmLoading={createEnvironment.isPending}
